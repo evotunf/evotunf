@@ -2,408 +2,316 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
-#include <time.h>
 #include <stdio.h>
 #include <assert.h>
 #include "evotunf_ext.h"
 #include "common.h"
 
-#define KLEENE_DIENES_IMPL(a, b) fmax(1.f - a, b)
-#define LUKASZEWICZ_IMPL(a, b) fmin(1.f, 1.f - a + b)
-#define REICHENBACH_IMPL(a, b) (1.f - a + a * b)
-#define FODOR_IMPL(a, b) ((a > b) ? fmax(1.f - a, b) : 1.f)
-#define GOGUEN_IMPL(a, b)  ((a > 0.f) ? fmin(1.f, b / a) : 1.f)
-#define GODEL_IMPL(a, b) ((a > b) ? b : 1.f)
-#define ZADEH_IMPL(a, b) fmax(fmin(a, b), 1.f - a)
-#define RESCHER_IMPL(a, b) ((float)(a <= b))
-#define YAGER_IMPL(a, b) powf(b, a)
-#define WILLMOTT_IMPL(a, b) fmin(fmax(1.f - a, b), fmax(fmax(a, 1 - b), fmin(1 - a, b)))
-#define DUBOIS_PRADE_IMPL(a, b) ((b == 0.f) ? (1.f - a) : (a == 1.f) ? (b) : 1.f)
 
-#define U(center, sigma, x) expf(-pow((x) - (center), 2)/pow((sigma), 2))
+#define LUKASZEWICZ_IMPL(a, b) fmin(1.f, 1.f - (a) + (b))
+#define IMPL(...) LUKASZEWICZ_IMPL(__VA_ARGS__)
+#define GAUSS(x, mu, sigma) (expf(-pow(x - mu, 2)/sigma) / sqrtf(2 * 3.14 * sigma))
 
-typedef struct GaussParams {
-    float center, sigma;
-} GaussParams;
+float minf(float x, float y) { return (x < y) ? x : y; }
 
-typedef struct EvolutionaryParams {
-    float sigma1, sigma2;
-} EvolutionaryParams;
+static float evaluate(
+        const unsigned *fsets_offsets, const GaussParams *gauss_params,
+        const unsigned char *rules, unsigned rules_len, unsigned n, const GaussParams *xx)
+{
+    unsigned i, j, k;
+    float numerator = 0.f, denominator = 0.f;
+
+    for (k = 0; k < rules_len; ++k) {
+        float y_center = gauss_params[fsets_offsets[n] + rules[k * (n+1) + n]].mu;
+        float cross = 1.f;
+
+        for (j = 0; j < rules_len; ++j) {
+            float max = 0.f;
+
+            for (i = 0; i < n; ++i) {
+                const GaussParams ux = xx[i];
+                const GaussParams ua = gauss_params[fsets_offsets[i] + rules[j * (n+1) + i]];
+                const GaussParams ub = gauss_params[fsets_offsets[n] + rules[j * (n+1) + n]];
+                float x, sup = 0.f;
+
+                for (x = 0.f; x <= 1.f; x += 0.1f) {
+                    float impl = IMPL(GAUSS(ua.mu, ua.sigma, x), GAUSS(ub.mu, ub.sigma, y_center));
+                    float t_norm = fminf(GAUSS(ux.mu, ux.sigma, x), impl);
+                    if (t_norm > sup) sup = t_norm;
+                }
+
+                if (sup > max) max = sup;
+            }
+
+            if (max < cross) cross = max;
+        }
+
+        numerator += y_center * cross;
+        denominator += cross;
+    }
+
+    return (denominator) ? numerator / denominator : 0.f;
+}
+
+void predict_cpu_impl(const unsigned *fsets_lens, const GaussParams *gauss_params, const unsigned char *rules, unsigned rules_len, unsigned n, const GaussParams *xxs, unsigned *ys, unsigned N)
+{
+    unsigned i, k;
+    unsigned fsets_offsets[n+1], offset = 0;
+
+    for (i = 0; i < n+1; ++i) {
+        fsets_offsets[i] = offset;
+        offset += fsets_lens[i];
+    }
+
+    for (k = 0; k < N; ++k) {
+        ys[k] = evaluate(fsets_offsets, gauss_params, rules, rules_len, n, xxs + k);
+    }
+}
 
 typedef struct Chromosome {
-    enum t_norm t_outer;
-    enum t_norm t_inner;
-    enum implication impl;
     GaussParams *gauss_params;
     EvolutionaryParams *evolutionary_params;
+    unsigned char *rules;
 } Chromosome;
 
 typedef struct Population {
     GaussParams *gauss_params_buf;
     EvolutionaryParams *evolutionary_params_buf;
+    unsigned char *rules_buf;
     Chromosome chromosomes[0];
 } Population;
 
-static float evaluate(enum t_norm t_outer_kind, enum t_norm t_inner_kind, enum implication impl_kind, GaussParams *gauss_params,
-        unsigned n, unsigned rules_number, const float *xx)
+static Chromosome* allocate_population(unsigned population_power, unsigned fsets_total_len, unsigned rules_len, unsigned n)
 {
-    size_t i, j, k;
-    double numerator = 0., denominator = 0.;
+    unsigned j;
 
-    for (j = 0; j < rules_number; ++j) {
-        GaussParams *jth_rule_params = gauss_params + j * (n+1);
-        float t_norm = 1.f;
-
-        for (k = 0; k < rules_number; ++k) {
-            GaussParams *kth_rule_params = gauss_params + k * (n+1);
-            float antecedent = 1.f;
-
-            switch (t_inner_kind) {
-                case PRODUCT: for (i = 0; i < n; ++i) antecedent *= U(kth_rule_params[i].center, kth_rule_params[i].sigma, xx[i]); break;
-                case MIN: for (i = 0; i < n; ++i) antecedent = fmin(antecedent, U(kth_rule_params[i].center, kth_rule_params[i].sigma, xx[i])); break;
-            }
-
-            float consequent = U(kth_rule_params[n].center, kth_rule_params[n].sigma, jth_rule_params[n].center);
-
-            float impl;
-            switch (impl_kind) {
-                case KLEENE_DIENES: impl = KLEENE_DIENES_IMPL(antecedent, consequent); break;
-                case LUKASZEWICZ: impl = LUKASZEWICZ_IMPL(antecedent, consequent); break;
-                case REICHENBACH: impl = REICHENBACH_IMPL(antecedent, consequent); break;
-                case FODOR: impl = FODOR_IMPL(antecedent, consequent); break;
-                case GOGUEN: impl = GOGUEN_IMPL(antecedent, consequent); break;
-                case GODEL: impl = GODEL_IMPL(antecedent, consequent); break;
-                case ZADEH: impl = ZADEH_IMPL(antecedent, consequent); break;
-                case RESCHER: impl = RESCHER_IMPL(antecedent, consequent); break;
-                case YAGER: impl = YAGER_IMPL(antecedent, consequent); break;
-                case WILLMOTT: impl = WILLMOTT_IMPL(antecedent, consequent); break;
-                case DUBOIS_PRADE: impl = DUBOIS_PRADE_IMPL(antecedent, consequent); break;
-            }
-
-            ASSERT_EX(0.f <= impl && impl <= 1.f, printf("%f %u %u\n", impl, j, k));
-
-            switch (t_outer_kind) {
-                case PRODUCT: t_norm *= impl; break;
-                case MIN: t_norm = fmin(t_norm, impl); break;
-            }
-
-            ASSERT_EX(0.f <= t_norm && t_norm <= 1.f, printf("%f %u %u\n", t_norm, j, k));
-        }
-
-        numerator += jth_rule_params[n].center * t_norm;
-        denominator += t_norm;
-    }
-    // ASSERT_EX(denominator > 0, printf("%d %d %d\n", t_outer_kind, t_inner_kind, impl_kind));
-    return (denominator > 0.f) ? (float) (numerator / denominator) : 0.f;
-}
-
-float mse(const Chromosome *chromosome, const float *xxs, const float *ys, unsigned rule_base_len, unsigned n, unsigned N)
-{
-    size_t i;
-    float error = 0.f;
-
-    for (i = 0; i < N; ++i) {
-        error += pow(evaluate(chromosome->t_outer, chromosome->t_inner, chromosome->impl, chromosome->gauss_params, n, rule_base_len, xxs + i * n) - ys[i], 2);
-        ASSERT_EX(isfinite(error), printf("%f %d %d %d\n", error, chromosome->t_outer, chromosome->t_inner, chromosome->impl));
-        // break;
-    }
-
-    return -sqrtf(error / N);
-}
-
-static Chromosome* allocate_population(unsigned population_power, unsigned rule_base_len, unsigned n)
-{
-    size_t j;
-
-    Population *population = malloc(sizeof(Population) + sizeof(Chromosome[population_power]));
-    population->gauss_params_buf = malloc(sizeof(GaussParams[population_power * rule_base_len * (n+1)]));
-    population->evolutionary_params_buf = malloc(sizeof(EvolutionaryParams[population_power * rule_base_len * (n+1)]));
+    Population *population = (Population*)malloc(sizeof(Population) + sizeof(Chromosome[population_power]));
+    GaussParams *gauss_params_buf = population->gauss_params_buf
+        = (GaussParams*)malloc(population_power * sizeof(GaussParams[fsets_total_len]));
+    EvolutionaryParams *evolutionary_params_buf = population->evolutionary_params_buf
+        = (EvolutionaryParams*)malloc(population_power * sizeof(EvolutionaryParams[fsets_total_len]));
+    unsigned char *rules_buf = population->rules_buf
+        = (unsigned char*)malloc(population_power * sizeof(unsigned char[rules_len * (n+1)]));
 
     for (j = 0; j < population_power; ++j) {
-        population->chromosomes[j].gauss_params = population->gauss_params_buf + j * rule_base_len * (n+1);
-        population->chromosomes[j].evolutionary_params = population->evolutionary_params_buf + j * rule_base_len * (n+1);
+        Chromosome *ch = population->chromosomes + j;
+        ch->gauss_params = gauss_params_buf + j * fsets_total_len;
+        ch->evolutionary_params = evolutionary_params_buf + j * fsets_total_len;
+        ch->rules = rules_buf + j * (rules_len * (n+1));
     }
+
     return population->chromosomes;
 }
 
-static void destroy_population(Chromosome *chromosomes, unsigned population_power)
+static void destroy_population(Chromosome *chromosomes)
 {
-    Population *population = (Population*) ((void*)chromosomes - offsetof(Population, chromosomes));
+    Population *population = (Population*)((char*)chromosomes - offsetof(Population, chromosomes));
 
     free(population->evolutionary_params_buf);
     free(population->gauss_params_buf);
     free(population);
 }
 
-static void initialize_population_with_data_bounds_accounting(
-        Chromosome *population, unsigned population_power, unsigned rule_base_len, unsigned n,
-        const float *xxs, const float *ys, unsigned N, float h)
+static void initialize_population(
+        DataBounds *data_bounds, const unsigned *fsets_lens, Chromosome *population, unsigned population_power,
+        unsigned rules_len, unsigned n, float h)
 {
-    size_t i, j, k;
-
-    struct data_bounds {
-        float min;
-        union { float max, diff, a; }
-    } data_bounds[n+1];
-
-    for (i = 0; i < n; ++i) data_bounds[i].min = data_bounds[i].max = xxs[i];
-    data_bounds[n].min = data_bounds[n].max = ys[0];
-
-    for (j = 1; j < N; ++j) {
-        for (i = 0; i < n; ++i) {
-            float val = xxs[j * (n+1) + i];
-
-            if (val < data_bounds[i].min) {
-                data_bounds[i].min = val;
-            }
-            if (val > data_bounds[i].max) {
-                data_bounds[i].max = val;
-            }
-        }
-
-        {
-            float val = ys[j];
-
-            if (val < data_bounds[n].min) {
-                data_bounds[n].min = val;
-            }
-            if (val > data_bounds[n].max) {
-                data_bounds[n].max = val;
-            }
-        }
-    }
-
-    for (i = 0; i < n+1; ++i) printf("%d = %f, ", i, data_bounds[i].max);
-    printf("\n");
-    for (i = 0; i < n+1; ++i) data_bounds[i].a = (data_bounds[i].max - data_bounds[i].min) / rule_base_len;
+    unsigned i, j, k, offset;
 
     for (j = 0; j < population_power; ++j) {
-        Chromosome *chromosome = population + j;
-        chromosome->t_outer = rnd() & 0x1;
-        chromosome->t_inner = rnd() & 0x1;
-        chromosome->impl = rnd() % 11;
-        for (k = 0; k < rule_base_len; ++k) {
-            GaussParams *gauss_params = chromosome->gauss_params + k * (n+1);
+        Chromosome *ch = population + j;
 
-            for (i = 0; i < n+1; ++i) {
-                gauss_params[i].center = data_bounds[i].min + (rnd() % rule_base_len) * data_bounds[i].a + data_bounds[i].a / 2;
-                gauss_params[i].sigma = data_bounds[i].a / 2;
+        offset = 0;
+        for (i = 0; i < n+1; ++i) {
+            unsigned fsets_len = fsets_lens[i];
+
+            for (k = 0; k < fsets_len; ++k) {
+                GaussParams *gp = ch->gauss_params + offset + k;
+                gp->mu = (rnd() % fsets_len + 0.5f) / fsets_len; // data_bounds[i].min + (rnd() % fsets_lens[i]) * data_bounds[i].a + data_bounds[i].a / 2.f;
+                gp->sigma = 0.5f / fsets_len; // data_bounds[i].a / 2.f;
+
+                EvolutionaryParams *ep = ch->evolutionary_params + offset + k;
+                ep->sigma1 = ep->sigma2 = h / fsets_len; // data_bounds[i].a;
             }
+            offset += fsets_len;
+        }
 
-            EvolutionaryParams *evolutionary_params = chromosome->evolutionary_params + k * (n+1);
-
+        for (k = 0; k < rules_len; ++k) {
             for (i = 0; i < n+1; ++i) {
-                evolutionary_params[i].sigma1 = evolutionary_params[i].sigma2 = h * data_bounds[i].a;
+                ch->rules[k * (n+1) + i] = rnd() % fsets_lens[i];
             }
         }
     }
 }
 
-static void compute_scores(const Chromosome *population, float *scores, unsigned population_power, unsigned rule_base_len,
-        const float *xxs, const float *ys, unsigned n, unsigned N)
+static float compute_mse(
+        const unsigned *fsets_offsets, const Chromosome *chromosome, unsigned rules_len, unsigned n,
+        const GaussParams *xxs, const unsigned *ys, unsigned N)
 {
-    size_t j;
+    unsigned k;
+    float score = 0.f;
 
-#pragma omp parallel for default(shared) schedule(dynamic)
+    for (k = 0; k < N; ++k) {
+        score += powf(ys[k] - evaluate(fsets_offsets, chromosome->gauss_params, chromosome->rules, rules_len, n, xxs + k * n), 2.f);
+    }
+
+    return sqrtf(score / N);
+}
+
+static void compute_scores(
+        const unsigned *fsets_offsets, const Chromosome *population, unsigned population_power, unsigned rules_len, unsigned n,
+        const GaussParams *xxs, const unsigned *ys, unsigned N, float *scores)
+{
+    unsigned j;
+
+#pragma omp parallel for
     for (j = 0; j < population_power; ++j) {
-        scores[j] = mse(population + j, xxs, ys, rule_base_len, n, N);
+        scores[j] = -compute_mse(fsets_offsets, population + j, rules_len, n, xxs, ys, N);
     }
 }
 
-static size_t get_best_chromosome_idx(const float *scores, unsigned population_power)
+static void perform_reproduction(
+        Chromosome *new_population, const Chromosome *population, unsigned new_population_power, unsigned population_power,
+        unsigned fsets_total_len, unsigned rules_len, unsigned n)
 {
-    size_t j, max_score_idx = 0;
+    unsigned j;
+
+    for (j = 0; j < new_population_power; ++j) {
+        Chromosome *new_ch = new_population + j;
+        Chromosome *ch = population + (rnd() % population_power);
+
+        memcpy(new_ch->gauss_params, ch->gauss_params, sizeof(GaussParams[fsets_total_len]));
+        memcpy(new_ch->evolutionary_params, ch->evolutionary_params, sizeof(EvolutionaryParams[fsets_total_len]));
+        memcpy(new_ch->rules, ch->rules, sizeof(unsigned char[rules_len * (n+1)]));
+    }
+}
+
+static unsigned get_best_chromosome_idx(const float *scores, unsigned population_power)
+{
+    unsigned j, max_index = 0;
     float max_value = scores[0];
 
     for (j = 1; j < population_power; ++j) {
         if (scores[j] > max_value) {
             max_value = scores[j];
-            max_score_idx = j;
+            max_index = j;
         }
     }
-    return max_score_idx;
+    return max_index;
 }
 
-static size_t get_worst_chromosome_idx(const float *scores, unsigned population_power)
+static void perform_selection(
+        float *scores, float *new_scores,
+        Chromosome *population, const Chromosome *new_population, unsigned population_power, unsigned new_population_power,
+        unsigned fsets_total_len, unsigned rules_len, unsigned n)
 {
-    size_t j, min_score_idx = 0;
-    float min_value = scores[0];
-
-    for (j = 1; j < population_power; ++j) {
-        if (scores[j] < min_value) {
-            min_value = scores[j];
-            min_score_idx = j;
-        }
-    }
-    return min_score_idx;
-}
-
-static void perform_reproduction(const Chromosome *population, Chromosome *new_population, const float *scores, unsigned population_power, unsigned new_population_power, unsigned rule_base_len, unsigned n)
-{
-    size_t i, j;
-    float score_sum, min_score;
-
-    min_score = scores[get_worst_chromosome_idx(scores, population_power)];
-    float pp_log = logf(population_power);
-    for (j = 0; j < population_power; ++j) score_sum += expf(-j / pp_log);
-    for (j = 0; j < new_population_power; ++j) {
-        // float rnd_score = rnd_prob() * score_sum;
-        // i = 0;
-        // while (i < population_power) { rnd_score -= expf(-i / pp_log); if (rnd_score > 0.f) ++i; else break; }
-        size_t chromosome_idx = (size_t) (rnd_prob() * population_power);
-        Chromosome *chromosome = population + chromosome_idx;
-        Chromosome *new_chromosome = new_population + j;
-
-        new_chromosome->t_outer = chromosome->t_outer;
-        new_chromosome->t_inner = chromosome->t_inner;
-        new_chromosome->impl = chromosome->impl;
-        memcpy(new_chromosome->gauss_params, chromosome->gauss_params, sizeof(GaussParams[rule_base_len * (n+1)]));
-        memcpy(new_chromosome->evolutionary_params, chromosome->evolutionary_params, sizeof(EvolutionaryParams[rule_base_len * (n+1)]));
-    }
-}
-
-static void perform_mutation(Chromosome *population, unsigned population_power, unsigned rule_base_len, unsigned n, float pm)
-{
-    const float tau1 = 1.f / sqrtf(2 * (rule_base_len * (n+1) * 2));
-    const float tau = 1.f / sqrtf(2 * sqrtf(rule_base_len * (n+1) * 2));
-    size_t i, j, k;
-
-    printf("sigma1 = %f, sigma2 = %f\n", population->evolutionary_params->sigma1, population->evolutionary_params->sigma2);
-    for (j = 0; j < population_power; ++j) {
-        // if (rnd_prob() > pm) continue;
-
-        Chromosome *chromosome = population + j;
-
-        float p = gauss_noise(0.f, 1.f);
-        if (rnd_prob() <= pm) chromosome->t_outer = rnd() & 0x1;
-        if (rnd_prob() <= pm) chromosome->t_inner = rnd() & 0x1;
-        if (rnd_prob() <= pm) chromosome->impl = (chromosome->impl + 1) % 11;
-        for (k = 0; k < rule_base_len; ++k) {
-            for (i = 0; i < n+1; ++i) {
-                EvolutionaryParams *evolutionary_params = chromosome->evolutionary_params + k * (n+1) + i;
-                evolutionary_params->sigma1 *= expf(tau1 * p + tau * gauss_noise(0.f, 1.f));
-                evolutionary_params->sigma2 *= expf(tau1 * p + tau * gauss_noise(0.f, 1.f));
-
-                GaussParams *gauss_params = chromosome->gauss_params + k * (n+1) + i;
-                gauss_params->center += evolutionary_params->sigma1 * gauss_noise(0.f, 1.f);
-                gauss_params->sigma += evolutionary_params->sigma2 * gauss_noise(0.f, 1.f);
-            }
-        }
-    }
-#undef RND_11
-}
-
-static void perform_selection(/* In[new_population,new_scores,etc], Out[population,scores] */
-        Chromosome *population, Chromosome *new_population, float *scores, float *new_scores,
-        unsigned population_power, unsigned new_population_power, unsigned rule_base_len, unsigned n)
-{
-    size_t i, j;
+    unsigned j;
 
     for (j = 0; j < population_power; ++j) {
-        size_t best_new_chromosome_idx = get_best_chromosome_idx(new_scores, new_population_power);
+        unsigned best_new_chromosome_idx = get_best_chromosome_idx(new_scores, new_population_power);
 
-        // SWAP(scores[j], new_scores[best_new_chromosome_idx]);
         scores[j] = new_scores[best_new_chromosome_idx];
         new_scores[best_new_chromosome_idx] = -INFINITY;
 
-        Chromosome *chromosome = population + j;
-        Chromosome *new_chromosome = new_population + best_new_chromosome_idx;
-        chromosome->t_outer = new_chromosome->t_outer;
-        chromosome->t_inner = new_chromosome->t_inner;
-        chromosome->impl = new_chromosome->impl;
-        memcpy(chromosome->gauss_params, new_chromosome->gauss_params, sizeof(GaussParams[rule_base_len * (n+1)]));
-        memcpy(chromosome->evolutionary_params, new_chromosome->evolutionary_params, sizeof(EvolutionaryParams[rule_base_len * (n+1)]));
+        Chromosome *new_ch = new_population + best_new_chromosome_idx;
+        Chromosome *ch = population + j;
+        memcpy(ch->gauss_params, new_ch->gauss_params, sizeof(GaussParams[fsets_total_len]));
+        memcpy(ch->evolutionary_params, new_ch->evolutionary_params, sizeof(EvolutionaryParams[fsets_total_len]));
+        memcpy(ch->rules, new_ch->rules, sizeof(unsigned char[rules_len * (n+1)]));
+        { unsigned i; for (i = 0; i < fsets_total_len; ++i) printf("%f %f; ", ch->gauss_params[i].mu, ch->gauss_params[i].sigma); printf("\n"); }
+        { unsigned i; for (i = 0; i < n+1; ++i) printf("%u; ", ch->rules[i]); printf("\n"); }
     }
 }
 
-void perform_evolutionary_tune_lfs(const float *xxs, const float *ys, unsigned n, unsigned N, unsigned rule_base_len, float mu, float lambda, LfsConfig *lfs_config)
+static void perform_mutation(
+        const unsigned *fsets_lens,
+        Chromosome *new_population, unsigned new_population_power, unsigned fsets_total_len, unsigned rules_len, unsigned n, float pm)
 {
-    assert(lambda >= mu);
+    unsigned i, j, k;
 
-    size_t i, j, k;
+    for (j = 0; j < new_population_power; ++j) {
+        Chromosome *ch = new_population + j;
 
-    unsigned population_power = mu, new_population_power = lambda;
-    Chromosome *population = allocate_population(population_power, rule_base_len, n);
-    Chromosome *new_population = allocate_population(new_population_power, rule_base_len, n);
+        {
+            unsigned chromosome_len = fsets_total_len * 2;
+            float tau1 = 1.f / sqrtf(2.f * chromosome_len);
+            float tau = 1.f / sqrtf(2.f * sqrtf(chromosome_len));
+            float p = gauss_noise(0.f, 1.f);
+
+            for (i = 0; i < fsets_total_len; ++i) {
+                EvolutionaryParams *ep = ch->evolutionary_params + i;
+                float sigma1 = ep->sigma1 *= expf(tau1 * p + tau * gauss_noise(0.f, 1.f));
+                float sigma2 = ep->sigma2 *= expf(tau1 * p + tau * gauss_noise(0.f, 1.f));
+
+                GaussParams *gp = ch->gauss_params + i;
+                gp->mu += sigma1 * gauss_noise(0.f, 1.f);
+                gp->sigma += sigma2 * gauss_noise(0.f, 1.f);
+            }
+        }
+
+        {
+            for (k = 0; k < rules_len; ++k) {
+                for (i = 0; i < n+1; ++i) {
+                    if (rnd_prob() <= pm) ch->rules[k * (n+1) + i] = rnd() % fsets_lens[i];
+                }
+            }
+        }
+    }
+}
+
+void tune_lfs_cpu_impl(
+        const unsigned *fsets_lens, unsigned rules_len, unsigned n,
+        const GaussParams *xxs, const unsigned *ys, unsigned N,
+        unsigned mu, unsigned lamda, unsigned it_number, GaussParams *fsets_table, unsigned char *rules)
+{
+    unsigned i;
+    unsigned fsets_offsets[n+1], fsets_total_len = 0, offset = 0;
+    DataBounds data_bounds[n+1];
+
+    compute_data_bounds(xxs, ys, data_bounds, N, n);
+    for (i = 0; i < n+1; ++i) {
+        assert(fsets_lens[i] > 0);
+        fsets_offsets[i] = offset;
+        offset += fsets_lens[i];
+        fsets_total_len += fsets_lens[i];
+        data_bounds[i].a = (data_bounds[i].max - data_bounds[i].min) / fsets_lens[i];
+    }
+
+    unsigned population_power = mu;
+    unsigned new_population_power = lamda;
+    unsigned it;
+    Chromosome *population = allocate_population(population_power, fsets_total_len, rules_len, n);
+    Chromosome *new_population = allocate_population(new_population_power, fsets_total_len, rules_len, n);
     float scores[population_power], new_scores[new_population_power];
 
-    initialize_population_with_data_bounds_accounting(population, population_power, rule_base_len, n, xxs, ys, N, 1.f);
-    compute_scores(population, scores, population_power, rule_base_len, xxs, ys, n, N);
+    initialize_population(data_bounds, fsets_lens, population, population_power, rules_len, n, 0.1f);
 
-    float avg;
-    unsigned it;
-    FILE* f_report = fopen("report.txt", "w");
-    for (it = 0; it < 100; ++it) {
-        printf("It [%3u] ", it);
-        avg = 0.f;
-        for (j = 0; j < population_power; ++j) {
-            avg += scores[j];
-            printf("%.0f ", scores[j]);
-        }
-        avg /= population_power;
-        fprintf(f_report, "%u,%f\n", it, avg);
-        printf("Avg: %.0f", avg);
-        printf("\n");
-        if (0)
-        for (j = 0; j < population_power; ++j) {
-            Chromosome *chromosome = population + j;
-            printf("[Chromosome %3u] t_outer = %d, t_inner = %d, impl = %d\n", j, chromosome->t_outer, chromosome->t_inner, chromosome->impl);
-            if (0)
-            for (k = 0; k < rule_base_len; ++k) {
-                for (i = 0; i < n+1; ++i) {
-                    printf("{%f %.2f} ", chromosome->gauss_params[k * (n+1) + i].center, chromosome->gauss_params[k * (n+1) + i].sigma);
-                }
-                printf("\n");
-            }
-        }
+    FILE *f = fopen("report_cpu.txt", "w");
+    for (it = 0; it < it_number; ++it) {
+        perform_reproduction(new_population, population, new_population_power, population_power, fsets_total_len, rules_len, n);
+        perform_mutation(fsets_lens, new_population, new_population_power, fsets_total_len, rules_len, n, 0.25f / (rules_len * (n+1)));
+        compute_scores(fsets_offsets, new_population, new_population_power, rules_len, n, xxs, ys, N, new_scores);
+        perform_selection(scores, new_scores, population, new_population, population_power, new_population_power, fsets_total_len, rules_len, n);
 
-        // Check for stop condition.
-        for (j = 0; j < population_power; ++j) {
-            if (scores[j] >= 0.95f) break;
-        }
+        {
+            unsigned j;
+            float avg = 0.f;
 
-        perform_reproduction(population, new_population, scores, population_power, new_population_power, rule_base_len, n);
-        perform_mutation(new_population, new_population_power, rule_base_len, n, 0.05);
-        compute_scores(new_population, new_scores, new_population_power, rule_base_len, xxs, ys, n, N);
-        if (0) {
-            printf("NewIt [%3u] ", it);
+            printf("It [%3d] ", it);
             for (j = 0; j < population_power; ++j) {
-                printf("%.1f ", new_scores[j]);
+                printf("%f ", scores[j]);
+                avg += scores[j];
             }
-            printf("\n");
+            avg /= population_power;
+            printf("Avg: %f\n", avg);
+            fprintf(f, "%f\n", avg);
         }
-        perform_selection(population, new_population, scores, new_scores, population_power, new_population_power, rule_base_len, n);
     }
-    fclose(f_report);
+    fclose(f);
 
-    size_t best_chromosome_idx = get_best_chromosome_idx(scores, population_power);
-    Chromosome *best_chromosome = population + best_chromosome_idx;
+    memcpy(fsets_table, population->gauss_params, sizeof(GaussParams[fsets_total_len]));
+    memcpy(rules, population->rules, sizeof(unsigned char[rules_len * (n+1)]));
 
-    lfs_config->t_outer = best_chromosome->t_outer;
-    lfs_config->t_inner = best_chromosome->t_inner;
-    lfs_config->impl = best_chromosome->impl;
-    memcpy(lfs_config->gauss_params, best_chromosome->gauss_params, sizeof(GaussParams[rule_base_len * (n+1)]));
-
-    destroy_population(population, population_power);
-    destroy_population(new_population, population_power);
-}
-
-LfsConfig train_lfs_cpu_impl(float *xx_train, float *y_train, unsigned n, unsigned N, float *rule_base, unsigned rule_base_len)
-{
-    LfsConfig lfs_config;
-
-    lfs_config.gauss_params = rule_base;
-    // perform_evolutionary_tune_lfs(xx_train, y_train, n, N, rule_base_len, 300, 1000, &lfs_config);
-    perform_evolutionary_tune_lfs(xx_train, y_train, n, N, rule_base_len, 100, 500, &lfs_config);
-    return lfs_config;
-}
-
-void infer_lfs_cpu_impl(LfsConfig lfs_config, const float *xxs, float *ys, unsigned n, unsigned N)
-{
-    size_t j;
-
-    for (j = 0; j < N; ++j) {
-        ys[j] = evaluate(lfs_config.t_outer, lfs_config.t_inner, lfs_config.impl, (GaussParams*)(void*)lfs_config.gauss_params,
-                    n, lfs_config.rule_base_len, xxs + j * n);
-    }
+    destroy_population(new_population);
+    destroy_population(population);
 }
