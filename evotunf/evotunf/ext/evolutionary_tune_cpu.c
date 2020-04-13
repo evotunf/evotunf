@@ -6,6 +6,7 @@
 #include <assert.h>
 #include "evotunf_ext.h"
 #include "common.h"
+#include "random.h"
 
 
 #define LUKASZEWICZ_IMPL(a, b) fmin(1.f, 1.f - (a) + (b))

@@ -64,8 +64,8 @@ __device__ float evaluate_kernel(
             impl_cache[j * n + attr_idx] = sup;
 
             float *impl_cache_row = impl_cache + j * n;
-            for (step = 1; attr_idx + step < n; step <<= 1) {
-                if (!(attr_idx & ((step<<1)-1))) {
+            for (step = 1; step < n; step <<= 1) {
+                if (!(attr_idx & ((step<<1)-1)) && attr_idx + step < n) {
                     if (impl_cache_row[attr_idx + step] > impl_cache_row[attr_idx]) {
                         impl_cache_row[attr_idx] = impl_cache_row[attr_idx + step];
                     }
@@ -83,8 +83,8 @@ __device__ float evaluate_kernel(
     }
 
     if (threadIdx.x == 0) {
-        for (step = 1; rule_idx + step < rules_len; step <<= 1) {
-            if (!(rule_idx & ((step<<1)-1))) {
+        for (step = 1; step < rules_len; step <<= 1) {
+            if (!(rule_idx & ((step<<1)-1)) && rule_idx + step < rules_len) {
                 res_cache[rule_idx].numerator += res_cache[rule_idx + step].numerator;
                 res_cache[rule_idx].denominator += res_cache[rule_idx + step].denominator;
             }
@@ -294,14 +294,13 @@ __global__ void accumulate_scores_kernel(
         const unsigned char *rules, size_t rules_pitch,
         const GaussParams *xxs, size_t xxs_pitch, const unsigned *ys, float *scores)
 {
-    unsigned data_idx = blockIdx.x;
     unsigned chromosome_idx = blockIdx.y;
+    unsigned data_idx = blockIdx.x;
 
     float pred = evaluate_kernel(
             fsets_offsets, (GaussParams*)((char*)gauss_params + chromosome_idx * gauss_params_pitch),
             rules + chromosome_idx * rules_pitch, (GaussParams*)((char*)xxs + data_idx * xxs_pitch));
     if (threadIdx.x == 0 && threadIdx.y == 0) {
-        // atomicAdd(scores + chromosome_idx, pred); // powf(pred, 2));
         atomicAdd(scores + chromosome_idx, powf(ys[data_idx] - pred, 2));
     }
 }
@@ -395,28 +394,58 @@ void perform_reproduction(
             chromosome_indices_d, new_rules_d, rules_d, rules_d_pitch, n);
 }
 
-__global__ void find_max_score_and_move_to_beginning_kernel(float *scores, unsigned *indices, unsigned start) //  , unsigned new_population_power, unsigned population_power)
+__global__ void find_max_score(float *scores, unsigned *indices, unsigned total_len, unsigned offset)
 {
     unsigned step;
-    // unsigned new_chromosome_idx = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-    unsigned population_power = blockDim.x;
-    unsigned chromosome_idx = threadIdx.x;
-    unsigned offset = start;
+    unsigned chromosome_idx = blockIdx.x * BLOCK_SIZE + threadIdx.x;
 
     extern __shared__ char cache[];
     float *scores_cache = (float*)cache;
-    unsigned *indices_cache = (unsigned*)(cache + population_power * sizeof(float));
+    unsigned *indices_cache = (unsigned*)(cache + BLOCK_SIZE * sizeof(float));
 
-    scores_cache[chromosome_idx] = scores[offset + chromosome_idx];
-    indices_cache[chromosome_idx] = offset + chromosome_idx;
-    for (step = 1; chromosome_idx + step < population_power; step <<= 1) {
-        if ((chromosome_idx & ((step<<1)-1)) == 0) {
-            if (scores_cache[chromosome_idx + step] > scores_cache[chromosome_idx]) {
-                scores_cache[chromosome_idx] = scores_cache[chromosome_idx + step];
-                indices_cache[chromosome_idx] = indices_cache[chromosome_idx + step];
+    if (chromosome_idx < total_len) {
+        scores_cache[threadIdx.x] = scores[offset + chromosome_idx];
+        indices_cache[threadIdx.x] = offset + chromosome_idx;
+    }
+
+    for (step = 1; step < BLOCK_SIZE; step <<= 1) {
+        if ((threadIdx.x & ((step<<1)-1)) == 0 && chromosome_idx + step < total_len) {
+            if (!isnan(scores_cache[threadIdx.x + step]) && scores_cache[threadIdx.x + step] > scores_cache[threadIdx.x]
+                    || isnan(scores_cache[threadIdx.x])) {
+                scores_cache[threadIdx.x] = scores_cache[threadIdx.x + step];
+                indices_cache[threadIdx.x] = indices_cache[threadIdx.x + step];
             }
         }
     }
+
+    if (threadIdx.x == 0) {
+        indices[offset + blockIdx.x] = indices_cache[0];
+    }
+}
+
+__global__ void find_max_score_from_indices(float *scores, unsigned *indices, unsigned offset)
+{
+    unsigned step;
+    unsigned idx = threadIdx.x;
+    unsigned dim = blockDim.x;
+
+    extern __shared__ char cache[];
+    float *scores_cache = (float*)cache;
+    unsigned *indices_cache = (unsigned*)(cache + dim * sizeof(float));
+
+    {
+        unsigned score_idx = indices_cache[idx] = indices[offset + idx];
+        scores_cache[idx] = scores[score_idx];
+    }
+    for (step = 1; step < dim; step <<= 1) {
+        if ((idx & ((step<<1)-1)) == 0 && idx + step < dim) {
+            if (scores_cache[idx + step] > scores_cache[idx]) {
+                scores_cache[idx] = scores_cache[idx + step];
+                indices_cache[idx] = indices_cache[idx + step];
+            }
+        }
+    }
+
     if (threadIdx.x == 0) {
         scores[indices_cache[0]] = -INFINITY;
         scores[offset] = scores_cache[0];
@@ -435,10 +464,19 @@ void perform_selection(
 
     for (i = 0; i < population_power; ++i) {
         unsigned len = new_population_power - i;
-        size_t shared_sz = sizeof(float[len]) + sizeof(unsigned[len]);
-        find_max_score_and_move_to_beginning_kernel<<<1, len, shared_sz>>>(chromosome_scores_d, chromosome_indices_d, i);
-        CUDA_CALL(cudaDeviceSynchronize());
+        unsigned dim = (len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        {
+            size_t shared_sz = sizeof(float[len]) + sizeof(unsigned[len]);
+            find_max_score<<<dim, BLOCK_SIZE, shared_sz>>>(chromosome_scores_d, chromosome_indices_d, len, i);
+            CUDA_CALL(cudaDeviceSynchronize());
+        }
+        {
+            size_t shared_sz = sizeof(float[dim]) + sizeof(unsigned[dim]);
+            find_max_score_from_indices<<<1, dim, shared_sz>>>(chromosome_scores_d, chromosome_indices_d, i);
+            CUDA_CALL(cudaDeviceSynchronize());
+        }
     }
+
     copy_params_for_given_chromosomes_kernel<<<population_power, fsets_total_len>>>(
             chromosome_indices_d, gauss_params_d, new_gauss_params_d, gauss_params_d_pitch,
             evolutionary_params_d, new_evolutionary_params_d, evolutionary_params_d_pitch);
@@ -672,7 +710,7 @@ void tune_lfs_gpu_impl(const unsigned *fsets_lens, unsigned rules_len, unsigned 
             params_random_states_d, params_random_states_d_pitch, rules_random_states_d, rules_random_states_d_pitch,
             data_bounds, fsets_lens, fsets_lens_d, fsets_total_len, population_power,
             gauss_params_d, gauss_params_d_pitch, evolutionary_params_d, evolutionary_params_d_pitch,
-            rules_d, rules_d_pitch, rules_len, n, 0.1);
+            rules_d, rules_d_pitch, rules_len, n, 0.001);
 
     CUDA_CALL(cudaMallocPitch(&xxs_d, &xxs_d_pitch, sizeof(GaussParams[n]), N));
     CUDA_CALL(cudaMalloc(&ys_d, sizeof(unsigned[N])));
