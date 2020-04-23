@@ -61,7 +61,7 @@ cy_extensions = [
         include_dirs=[np.get_include(), CUDA['include']],
         extra_compile_args={
             'gcc': ['-O2', '-fopenmp'],
-            'nvcc': ['-arch=sm_35', '-lineinfo', '--ptxas-options', '-v', '--compiler-options', '-fPIC']},
+            'nvcc': ['-arch=sm_35', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O3,-v', '--compiler-options', '-fPIC']},
         extra_link_args=['-fopenmp', '-g'],
     )
 ]

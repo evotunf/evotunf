@@ -6,36 +6,29 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from evotunf import LogicalFuzzyClassifier
+from evotunf import LogicalFuzzyClassifier, GaussParamsDtype
 
 
-DATA = pd.read_csv('datasets/car/car.data', names=[
-    'buying', 'maint', 'doors', 'persons', 'lug_boot', 'safety', 'class'])
-DATA.info()
+DATA = pd.read_csv('datasets/balance-scale/balance-scale.data', names=[
+    'cls', 'lw', 'ld', 'rw', 'rd'], dtype=str)
 
-ATTR_DICT = {
-    'buying': ['vhigh', 'high', 'med', 'low'],
-    'maint': ['vhigh', 'high', 'med', 'low'],
-    'doors': ['2', '3', '4', '5more'],
-    'persons': ['2', '4', 'more'],
-    'lug_boot': ['small', 'med', 'big'],
-    'safety': ['low', 'med', 'high'],
-    'class': ['unacc', 'acc', 'good', 'vgood'],
-}
-
-GaussParamsDtype = np.dtype([('mu', 'f4'), ('sigma', 'f4')])
+ATTR_DICT = OrderedDict([
+    *[(c, list(map(str, range(1, 6)))) for c in ['lw', 'ld', 'rw', 'rd']],
+    ('cls', ['L', 'B', 'R']),
+])
+ATTR_NAMES = list(ATTR_DICT.keys())
 
 def _filter_dict_by_not_none_keys(d, keys=None):
-    return {k: d.get(k) for k in (keys if keys is not None else d) if d.get(k)}
+    return type(d)([(k, d.get(k)) for k in (keys if keys is not None else d) if d.get(k) is not None ])
 
 def build_fsets(categories):
     k = len(categories)
     return OrderedDict((c, ((i + 0.5) / k, 0.5 / k)) for i, c in enumerate(categories))
 
 def build_xxs(data, attr_dict):
-    attr2fsets_mapping = {c: build_fsets(l) for c, l in attr_dict.items()}
-    return np.array([[c2f[xx[c]] for c, c2f in attr2fsets_mapping.items()]
-                     for _, xx in data.iterrows()], dtype=GaussParamsDtype)
+    attr2fsets_mapping = OrderedDict([(c, build_fsets(l)) for c, l in attr_dict.items()])
+    return np.array([[c2f[row[c]] for c, c2f in attr2fsets_mapping.items()]
+                     for _, row in data.iterrows()], dtype=GaussParamsDtype)
 
 def build_ys(data, attr, categories):
     k = len(categories)
@@ -55,12 +48,12 @@ if __name__ == '__main__':
     config = _filter_dict_by_not_none_keys(vars(args))
     print('Config:', config)
 
-    xxs = build_xxs(DATA, _filter_dict_by_not_none_keys(ATTR_DICT, DATA.columns[:-1]))
-    ys = build_ys(DATA, DATA.columns[-1], ATTR_DICT[DATA.columns[-1]])
-    fsets_lens = np.array([len(ATTR_DICT[a]) for a in DATA.columns], dtype=np.uint32)
-    print(fsets_lens)
+    xxs = build_xxs(DATA, _filter_dict_by_not_none_keys(ATTR_DICT, ATTR_NAMES[:-1]))
+    ys = build_ys(DATA, ATTR_NAMES[-1], ATTR_DICT[ATTR_NAMES[-1]])
+    fsets_lens = np.array([len(ATTR_DICT[a]) for a in ATTR_NAMES], dtype=np.uint32)
+    # print(fsets_lens)
     xx_train, xx_test, y_train, y_test = train_test_split(xxs, ys, test_size=0.2, shuffle=False)
 
     # lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, strategy=strategy, iterations=5)
-    lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, **config)
+    lfc = LogicalFuzzyClassifier().fit(fsets_lens, xxs, ys, **config)
     print(lfc.score(xx_test, y_test, **_filter_dict_by_not_none_keys(config, ('strategy',))))

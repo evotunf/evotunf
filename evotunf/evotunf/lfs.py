@@ -6,6 +6,7 @@ from evotunf_ext import tune_lfs_gpu, predict_gpu
 
 class LogicalFuzzyClassifier:
     def __init__(self):
+        self.fsets_lens = None
         self.fsets_table = None
         self.rules = None
 
