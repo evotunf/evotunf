@@ -31,11 +31,6 @@ enum implication {
 #define WILLMOTT_IMPL(a, b) fmin(fmax(1.f - a, b), fmax(fmax(a, 1 - b), fmin(1 - a, b)))
 #define DUBOIS_PRADE_IMPL(a, b) ((b == 0.f) ? (1.f - a) : (a == 1.f) ? (b) : 1.f)
 
-typedef struct DataBounds {
-    float min;
-    union { float max, a; };
-} DataBounds;
-
 typedef struct GaussParams {
     float mu, sigma;
 } GaussParams;
@@ -43,42 +38,3 @@ typedef struct GaussParams {
 typedef struct EvolutionaryParams {
     float sigma1, sigma2;
 } EvolutionaryParams;
-
-static
-void compute_data_bounds(const GaussParams *xxs, const unsigned *ys, DataBounds *data_bounds, unsigned N, unsigned n)
-{
-    size_t i, j;
-
-    for (i = 0; i < n; ++i) {
-        data_bounds[i].min = xxs[i].mu - xxs[i].sigma;
-        data_bounds[i].max = xxs[i].mu + xxs[i].sigma;
-    }
-    data_bounds[n].min = ys[0] - 0.5f;
-    data_bounds[n].max = ys[0] + 0.5f;
-
-    for (j = 1; j < N; ++j) {
-        for (i = 0; i < n; ++i) {
-            GaussParams gp = xxs[j * n + i];
-
-            if (gp.mu - gp.sigma < data_bounds[i].min) {
-                data_bounds[i].min = gp.mu - gp.sigma;
-            }
-
-            if (gp.mu + gp.sigma > data_bounds[i].max) {
-                data_bounds[i].max = gp.mu + gp.sigma;
-            }
-        }
-
-        {
-            float val = ys[j];
-
-            if (val - 0.5f < data_bounds[n].min) {
-                data_bounds[n].min = val - 0.5f;
-            }
-
-            if (val + 0.5f > data_bounds[n].max) {
-                data_bounds[n].max = val + 0.5f;
-            }
-        }
-    }
-}

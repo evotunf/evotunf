@@ -52,7 +52,6 @@ cy_extensions = [
         'evotunf_ext',
         list(map(lambda f: os.path.join(PACKAGE_NAME, 'ext', f), [
             '__init__.pyx',
-            'evolutionary_tune_cpu.c',
             'evolutionary_tune_gpu.cu',
         ])),
         library_dirs=[CUDA['lib64']],

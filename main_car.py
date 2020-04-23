@@ -44,7 +44,6 @@ def build_ys(data, attr, categories):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-s', '--strategy', choices=('cpu', 'gpu'), default='gpu')
 parser.add_argument('-i', '--iterations', type=int)
 parser.add_argument('-r', '--rules', type=int)
 parser.add_argument('--mu', type=int)
@@ -63,4 +62,4 @@ if __name__ == '__main__':
 
     # lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, strategy=strategy, iterations=5)
     lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, **config)
-    print(lfc.score(xx_test, y_test, **_filter_dict_by_not_none_keys(config, ('strategy',))))
+    print(lfc.score(xx_test, y_test))
