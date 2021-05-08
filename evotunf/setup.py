@@ -19,6 +19,7 @@ def find_in_path(name, path=None):
             return os.path.abspath(binpath)
     return None
 
+
 def locate_cuda():
     if 'CUDAHOME' in os.environ:
         home = os.environ['CUDAHOME']
@@ -44,8 +45,8 @@ def locate_cuda():
                 item=item, path=path))
     return cudaconfig
 
-CUDA = locate_cuda()
 
+CUDA = locate_cuda()
 
 cy_extensions = [
     Extension(
@@ -53,17 +54,21 @@ cy_extensions = [
         list(map(lambda f: os.path.join(PACKAGE_NAME, 'ext', f), [
             '__init__.pyx',
             'evolutionary_tune_gpu.cu',
+            'evolutionary_tune_cpu.c',
+            'ga_params.c',
         ])),
         library_dirs=[CUDA['lib64']],
         libraries=['stdc++', 'cudart'],
         runtime_library_dirs=[CUDA['lib64']],
         include_dirs=[np.get_include(), CUDA['include']],
         extra_compile_args={
-            'gcc': ['-O2', '-fopenmp'],
-            'nvcc': ['-arch=sm_35', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O3,-v', '--compiler-options', '-fPIC']},
-        extra_link_args=['-fopenmp', '-g'],
+            'gcc': ['-g3', '-Og', '-fopenmp'],
+            'nvcc': ['-arch=sm_35', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O3,-v', '--compiler-options', '-fPIC']
+        },
+        extra_link_args=['-fopenmp', '-Og', '-g3'],
     )
 ]
+
 
 def customize_compiler_for_nvcc(self):
     self.src_extensions.append('.cu')
@@ -81,6 +86,7 @@ def customize_compiler_for_nvcc(self):
         self.compiler_so = default_compiler_so
 
     self._compile = _compile
+
 
 class custom_build_ext(build_ext):
     def build_extensions(self):

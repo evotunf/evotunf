@@ -1,6 +1,8 @@
 #ifndef EVOTUNF_RANDOM_H
 #define EVOTUNF_RANDOM_H
 
+#include <math.h>
+#include <time.h>
 #include "common.h"
 
 #define MT19937_RND_MAX 0xFFFFFFFF // ((1 << 32) - 1)
@@ -31,18 +33,22 @@ static unsigned mt19937_rnd()
 
     static unsigned mt[624];
     static unsigned index = 625; // mtg.n + 1;
-    static const unsigned lower_mask = 0xFFFFFFFF; // (1 << mtg.r) - 1; // the binary number of r 1's
-    static const unsigned upper_mask = 0; // ~lower_mask;
+    static const unsigned lower_mask = (1 << 31) - 1; // the binary number of r 1's
+    static const unsigned upper_mask =  ~lower_mask;
+
+/* #ifdef _OPENMP */
+/* #pragma omp threadprivate(mt, index) */
+/* #endif */
 
     if (index >= mtg.n) {
-        size_t i;
+        unsigned i;
 
-        if (index > mtg.n) {
+				if (index > mtg.n) {
             mt[0] = time(0);
             for (i = 1; i < mtg.n; ++i) {
                 mt[i] = (mtg.f * (mt[i-1] ^ (mt[i-1] >> (mtg.w-2))) + i);
             }
-        }
+				}
 
         for (i = 0; i < mtg.n; ++i) {
             unsigned x = (mt[i] & upper_mask) + (mt[(i+1) % mtg.n] & lower_mask);
@@ -72,9 +78,9 @@ static unsigned rnd()
     return mt19937_rnd();
 }
 
-static float rnd_prob()
+static double rnd_prob()
 {
-    return (float) rnd() / ((float)RND_MAX);
+    return (double) rnd() / ((double)RND_MAX);
 }
 
 static float gauss_noise(float mu, float sigma)
