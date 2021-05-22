@@ -392,7 +392,7 @@ void tune_lfs_cpu_impl(
 																n, rules_len, population + k, uxxs, ys, N);
     }
 
-#pragma omp single
+#pragma omp single nowait
     {
       double sum = 0.0f, min = +INFINITY, max = -INFINITY;
       unsigned max_index = 0;
@@ -445,7 +445,7 @@ void tune_lfs_cpu_impl(
       printf("pc = %f, pm = %f\n", pc, pm);
     }
     
-#pragma omp master
+#pragma omp single
 		perform_selection(scores, indices, population_power);
 
 #pragma omp for schedule(dynamic)
@@ -460,7 +460,7 @@ void tune_lfs_cpu_impl(
       }
     }
 
-#pragma omp barrier
+// #pragma omp barrier
 		
 #pragma omp for schedule(dynamic, 4)
     for (k = 0; k < population_power; ++k) {
@@ -469,7 +469,7 @@ void tune_lfs_cpu_impl(
 
     SWAP(population, new_population);
   }
-#pragma omp barrier
+// #pragma omp barrier
 	printf("Mean variance: %f\n", mean_variance);
   printf("Evolution finished...\n");
   fclose(f);

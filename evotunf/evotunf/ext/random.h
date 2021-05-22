@@ -36,19 +36,17 @@ static unsigned mt19937_rnd()
     static const unsigned lower_mask = (1 << 31) - 1; // the binary number of r 1's
     static const unsigned upper_mask =  ~lower_mask;
 
-/* #ifdef _OPENMP */
-/* #pragma omp threadprivate(mt, index) */
-/* #endif */
+#pragma omp threadprivate(mt, index)
 
     if (index >= mtg.n) {
         unsigned i;
 
-				if (index > mtg.n) {
-            mt[0] = time(0);
+		if (index > mtg.n) {
+            mt[0] = time(NULL) + omp_get_thread_num();
             for (i = 1; i < mtg.n; ++i) {
                 mt[i] = (mtg.f * (mt[i-1] ^ (mt[i-1] >> (mtg.w-2))) + i);
             }
-				}
+		}
 
         for (i = 0; i < mtg.n; ++i) {
             unsigned x = (mt[i] & upper_mask) + (mt[(i+1) % mtg.n] & lower_mask);

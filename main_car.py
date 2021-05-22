@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from evotunf import LogicalFuzzyClassifier
+from evotunf import LogicalFuzzyClassifier, GaussParamsDtype
 
 
 DATA = pd.read_csv('datasets/car/car.data', names=[
@@ -46,8 +46,7 @@ def build_ys(data, attr, categories):
 parser = argparse.ArgumentParser()
 parser.add_argument('-i', '--iterations', type=int)
 parser.add_argument('-r', '--rules', type=int)
-parser.add_argument('--mu', type=int)
-parser.add_argument('--lamda', type=int)
+parser.add_argument('-p', '--population', type=int)
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -60,6 +59,10 @@ if __name__ == '__main__':
     # print(fsets_lens)
     xx_train, xx_test, y_train, y_test = train_test_split(xxs, ys, test_size=0.2, shuffle=False)
 
-    # lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, strategy=strategy, iterations=5)
     lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, **config)
+    print(lfc.v)
+    print(lfc.fsets_table)
+    print(lfc.rules)
     print(lfc.score(xx_test, y_test))
+    print(y_test)
+    print(lfc.score(xx_test, y_test, strategy='py'))

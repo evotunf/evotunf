@@ -570,7 +570,7 @@ void tune_lfs_gpu_impl(
 	GaussParams *fsets_d, *uxx_table_d;
 	signed char *rules_table_d, *new_rules_table_d;
 	unsigned *ys_d, *indices_d;
-	float *scores_d, *scores_copy_d;
+	float *scores_d;
 	size_t rules_table_pitch, uxx_table_pitch;
 	unsigned batch_len = MIN(N, 2);
 
@@ -591,15 +591,16 @@ void tune_lfs_gpu_impl(
 	CUDA_CALL(cudaMalloc(&ys_d, sizeof(unsigned[N])));
 	CUDA_CALL(cudaMemcpy(ys_d, ys, sizeof(unsigned[N]), cudaMemcpyHostToDevice));
 	CUDA_CALL(cudaMalloc(&scores_d, sizeof(float[population_power])));
-	CUDA_CALL(cudaMalloc(&scores_copy_d, sizeof(float[population_power])));
 	CUDA_CALL(cudaMalloc(&indices_d, sizeof(unsigned[population_power])));
 
 	float last_best_score = 0.f;
 	BestValueLoc *best_chromosome_loc_d;
+	float *scores_copy_d;
 	GaussParams *res_fsets_d;
 	signed char *res_rules_d;
 
 	CUDA_CALL(cudaMalloc(&best_chromosome_loc_d, sizeof(BestValueLoc)));
+	CUDA_CALL(cudaMalloc(&scores_copy_d, sizeof(float[population_power])));
 	CUDA_CALL(cudaMalloc(&res_fsets_d, sizeof(GaussParams[fsets_total_len])));
 	CUDA_CALL(cudaMalloc(&res_rules_d, sizeof(signed char[rules_len][n+1])));
 

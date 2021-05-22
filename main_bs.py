@@ -7,6 +7,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from evotunf import LogicalFuzzyClassifier, GaussParamsDtype
+from parser import get_parser
+from utils import _filter_dict_by_not_none_keys
 
 
 DATA = pd.read_csv('datasets/balance-scale/balance-scale.data', names=[
@@ -18,17 +20,16 @@ ATTR_DICT = OrderedDict([
 ])
 ATTR_NAMES = list(ATTR_DICT.keys())
 
-def _filter_dict_by_not_none_keys(d, keys=None):
-    return type(d)([(k, d.get(k)) for k in (keys if keys is not None else d) if d.get(k) is not None ])
+GaussParamsDtype = np.dtype([('mu', 'f4'), ('sigma', 'f4')])
 
 def build_fsets(categories):
     k = len(categories)
     return OrderedDict((c, ((i + 0.5) / k, 0.5 / k)) for i, c in enumerate(categories))
 
 def build_xxs(data, attr_dict):
-    attr2fsets_mapping = OrderedDict([(c, build_fsets(l)) for c, l in attr_dict.items()])
-    return np.array([[c2f[row[c]] for c, c2f in attr2fsets_mapping.items()]
-                     for _, row in data.iterrows()], dtype=GaussParamsDtype)
+    attr2fsets_mapping = {c: build_fsets(l) for c, l in attr_dict.items()}
+    return np.array([[c2f[xx[c]] for c, c2f in attr2fsets_mapping.items()]
+                     for _, xx in data.iterrows()], dtype=GaussParamsDtype)
 
 def build_ys(data, attr, categories):
     k = len(categories)
@@ -36,23 +37,21 @@ def build_ys(data, attr, categories):
     return np.array([category2idx[y] for y in data[attr]], dtype=np.uint32)
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('-i', '--iterations', type=int)
-parser.add_argument('-r', '--rules', type=int)
-parser.add_argument('--mu', type=int)
-parser.add_argument('--lamda', type=int)
-
 if __name__ == '__main__':
+    parser = get_parser()
     args = parser.parse_args()
     config = _filter_dict_by_not_none_keys(vars(args))
     print('Config:', config)
 
-    xxs = build_xxs(DATA, _filter_dict_by_not_none_keys(ATTR_DICT, ATTR_NAMES[:-1]))
-    ys = build_ys(DATA, ATTR_NAMES[-1], ATTR_DICT[ATTR_NAMES[-1]])
-    fsets_lens = np.array([len(ATTR_DICT[a]) for a in ATTR_NAMES], dtype=np.uint32)
+    xxs = build_xxs(DATA, _filter_dict_by_not_none_keys(ATTR_DICT, DATA.columns[:-1]))
+    ys = build_ys(DATA, DATA.columns[-1], ATTR_DICT[DATA.columns[-1]])
+    fsets_lens = np.array([len(ATTR_DICT[a]) for a in DATA.columns], dtype=np.uint32)
     # print(fsets_lens)
-    xx_train, xx_test, y_train, y_test = train_test_split(xxs, ys, test_size=0.2, shuffle=False)
+    xx_train, xx_test, y_train, y_test = train_test_split(xxs, ys, test_size=0.2,
+                                                          shuffle=True, random_state=42)
 
-    # lfc = LogicalFuzzyClassifier().fit(fsets_lens, xx_train, y_train, strategy=strategy, iterations=5)
-    lfc = LogicalFuzzyClassifier().fit(fsets_lens, xxs, ys, **config)
-    print(lfc.score(xx_test, y_test))
+    lfc = LogicalFuzzyClassifier(fsets_lens).fit(xx_train, y_train, **config, strategy='gpu')
+    print(lfc.fsets_table)
+    print(lfc.rules)
+    print(y_test)
+    print(lfc.score(xx_test, y_test, strategy='cpu'))
