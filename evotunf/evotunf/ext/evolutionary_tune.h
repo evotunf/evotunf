@@ -7,6 +7,10 @@ typedef struct GaussParams {
     float mu, sigma;
 } GaussParams;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void predict_cpu_impl(
 											const unsigned *fset_lens, const GaussParams *fsets, unsigned n,
 											const signed char *rules, unsigned rules_len,
@@ -17,10 +21,6 @@ void tune_lfs_cpu_impl(
 											 const GaussParams *uxxs, const unsigned *ys, unsigned N,
 											 unsigned population_power, unsigned iterations_number,
 											 GaussParams *fsets, signed char *rules);
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsigned n,
 											const signed char *rules, unsigned rules_len,

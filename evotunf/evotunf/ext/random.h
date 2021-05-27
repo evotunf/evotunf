@@ -3,6 +3,7 @@
 
 #include <math.h>
 #include <time.h>
+#include <omp.h>
 #include "common.h"
 
 #define MT19937_RND_MAX 0xFFFFFFFF // ((1 << 32) - 1)
@@ -24,9 +25,9 @@ static unsigned mt19937_rnd()
     static const struct mersene_twister_generator mtg = {
         .w = 32, .n = 624, .m = 397, .r = 31,
         .a = 0x9908B0DF,
+				.b = 0x9D2C5680, .c = 0xEFC60000,
+        .s = 7, .t = 15,
         .u = 11, .d = 0xFFFFFFFF,
-        .s = 7, .b = 0x9D2C5680,
-        .t = 15, .c = 0xEFC60000,
         .l = 18,
         .f = 1812433253
     };

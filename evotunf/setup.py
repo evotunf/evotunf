@@ -54,7 +54,7 @@ cy_extensions = [
         list(map(lambda f: os.path.join(PACKAGE_NAME, 'ext', f), [
             '__init__.pyx',
             'evolutionary_tune_gpu.cu',
-            'evolutionary_tune_cpu.c',
+            'evolutionary_tune_cpu.cpp',
             'ga_params.c',
         ])),
         library_dirs=[CUDA['lib64']],
@@ -63,7 +63,8 @@ cy_extensions = [
         include_dirs=[np.get_include(), CUDA['include']],
         extra_compile_args={
             'gcc': ['-g3', '-Og', '-fopenmp'],
-            'nvcc': ['-arch=sm_35', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O3,-v', '--compiler-options', '-fPIC']
+            'g++': ['-g3', '-Og', '-fopenmp', '-fPIC'],
+            'nvcc': ['--std=c++14', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O0,-v', '--compiler-options', '-fPIC']
         },
         extra_link_args=['-fopenmp', '-Og', '-g3'],
     )
@@ -80,6 +81,9 @@ def customize_compiler_for_nvcc(self):
         if ext == '.cu':
             self.set_executable('compiler_so', CUDA['nvcc'])
             postargs = extra_postargs['nvcc']
+        elif ext in ('.cpp', '.cc'):
+            self.set_executable('compiler_so', 'g++')
+            postargs = extra_postargs['g++']
         else:
             postargs = extra_postargs['gcc']
         super(obj, src, ext, cc_args, postargs, pp_opts)

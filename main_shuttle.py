@@ -72,35 +72,8 @@ if __name__ == '__main__':
 
     lfc = LogicalFuzzyClassifier(fset_lens=fset_lens)
     lfc.fit(uxxs, ys, strategy='gpu', **config)
-    # print(lfc.rules)
-#     lfc.fsets = np.array([
-#         (i / (n+1), 1.0 / (n+1))
-#         for n in [2, 4, 2, 2, 4, 2, 2]
-#         for i in range(1, n+1)
-#     ], dtype=GaussParamsDtype)
-#     rules_str = """
-# 2,*,*,*,*,*,2
-# 1,2,*,*,*,*,1
-# 1,1,2,*,*,*,1
-# 1,1,1,*,*,*,1
-# 1,1,3,2,2,*,1
-# 1,*,*,*,*,4,1
-# 2,1,4,*,*,1,1
-# 2,1,4,*,*,2,1
-# 2,1,4,*,*,3,1
-# 2,1,3,1,1,1,1
-# 2,1,3,1,1,2,1
-# 2,1,3,1,2,1,1
-# 2,1,3,1,2,2,1
-# 1,1,3,1,1,3,1
-# 2,1,3,1,2,3,1
-# """.replace('*', '0')
-#     rules_df = pd.read_csv(io.StringIO(rules_str), names=[
-#         'cls', 'stability', 'error', 'sign',
-#         'wind', 'magnitude', 'visibility'])
-#     rules = rules_df[['stability', 'error', 'sign', 'wind',
-#                       'magnitude', 'visibility', 'cls']].values
-#     lfc.rules = np.ascontiguousarray(rules, np.int8)
+    print(lfc.fsets)
+    print(np.sort(lfc.rules, axis=0))
     lfc.predict(uxxs, strategy='gpu')
     print(lfc.score(uxxs, ys, strategy='gpu'))
     

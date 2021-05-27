@@ -20,11 +20,15 @@
 #define ALIGN_DOWN(base, n) ((base) & ~((n)-1))
 #define ALIGN_UP(base, n) ALIGN_DOWN((base) + (n) - 1, (n))
 
+#ifdef __cplusplus
+#define SWAP(x, y) std::swap(x, y)
+#else
 #define SWAP(x, y)															\
   ({																						\
     __auto_type tmp = (x);											\
     (x) = (y);																	\
     (y) = tmp;																	\
   })
+#endif
 
 #endif // EVOTUNF_COMMON_H

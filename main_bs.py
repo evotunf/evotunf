@@ -50,8 +50,8 @@ if __name__ == '__main__':
     xx_train, xx_test, y_train, y_test = train_test_split(xxs, ys, test_size=0.2,
                                                           shuffle=True, random_state=42)
 
-    lfc = LogicalFuzzyClassifier(fsets_lens).fit(xx_train, y_train, **config, strategy='gpu')
-    print(lfc.fsets_table)
+    lfc = LogicalFuzzyClassifier(fsets_lens).fit(xx_train, y_train, **config, strategy='cpu')
+    print(lfc.fsets)
     print(lfc.rules)
     print(y_test)
     print(lfc.score(xx_test, y_test, strategy='cpu'))

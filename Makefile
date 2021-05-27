@@ -2,7 +2,7 @@
 
 .ONESHELL:
 all: install
-	python3 main_shuttle.py -i 150 -r 15 -p 50
+	python3 main_shuttle.py -i 150 -r 15 -p 100
 valgrind: install
 	valgrind \
 		 --log-file=valgrind-out.txt \
