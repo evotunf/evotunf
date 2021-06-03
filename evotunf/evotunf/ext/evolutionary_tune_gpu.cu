@@ -594,7 +594,7 @@ static __forceinline void perform_mutation(curandStateMtgp32 *states_d, unsigned
 {
 	{
 		unsigned blocks = MIN(population_power, 200);
-		unsigned threads = fsets_total_len;//MIN(fsets_total_len + rules_len, 256);
+		unsigned threads = MIN(fsets_total_len, 256);
 		perform_fsets_mutation_kernel<<<blocks, threads>>>(states_d, population_power,
 																											 fsets_table_d, fsets_table_pitch, fsets_total_len,
 																											 pm_fsets);
@@ -602,7 +602,7 @@ static __forceinline void perform_mutation(curandStateMtgp32 *states_d, unsigned
 	}
 	{
 		unsigned blocks = MIN(population_power, 200);
-		unsigned threads = rules_len;//MIN(fsets_total_len + rules_len, 256);
+		unsigned threads = MIN(rules_len, 256);
 		perform_rules_mutation_kernel<<<blocks, threads>>>(states_d, population_power,
 																											 fset_lens_d, n,
 																											 rules_table_d, rules_table_pitch, rules_len,
@@ -687,7 +687,7 @@ void tune_lfs_gpu_impl(
 											 unsigned population_power, unsigned iterations_number,
 											 GaussParams *fsets, signed char *rules)
 {
-	// init_device_props();
+	init_device_props();
 
 	unsigned i, k, it;
 	unsigned fsets_total_len = 0, fset_offsets[n+1];

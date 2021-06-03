@@ -411,16 +411,14 @@ void tune_lfs_cpu_impl(
   /* float pm0 = 0.15, pm1 = 0.3f; */
   float pc = 0.9f, pm_fsets = 1.f / (fsets_total_len * 20), pm_rules = 1.f / (rules_len * n);
 
-  FILE *f = fopen("report_cpu.txt", "w");
-  FILE *fs = fopen("report_cpu_scores.txt", "w");
-  FILE *fpp = fopen("report_ga_params.txt", "w");
-  printf("Evolution started...\n");
+  // FILE *f = fopen("report_cpu_scores.txt", "w");
+  // printf("Evolution started...\n");
 #pragma omp parallel default(none)																			\
   shared(fsets_total_len, fset_offsets, fset_lens, n, rules_len, N,			\
 				 population_power, iterations_number, uxxs, ys,									\
-				 last_best_score, last_best_update_it, mean_variance)						\
+				 last_best_score, last_best_update_it)													\
   private(it, k)																												\
-  firstprivate(fsets, rules, pc, pm_fsets, pm_rules, f, fs, fpp,				\
+  firstprivate(fsets, rules, pc, pm_fsets, pm_rules,										\
 							 population, new_population, scores, indices) // Create threads team
   for (it = 0; it < iterations_number; ++it) {
     /* float a = exp(-(float) iterations_number / (it + 1.f)); */
@@ -438,33 +436,23 @@ void tune_lfs_cpu_impl(
       double sum = 0.0f, min = +INFINITY, max = -INFINITY;
       unsigned max_index = 0;
       
-      printf("[Iteration %3d] ", it);
+      // printf("[Iteration %3d] ", it);
       for (k = 0; k < population_power; ++k) {
-				sum += scores[k];
+			// 	// sum += scores[k];
 				if (scores[k] > max) {
 					max = scores[k];
 					max_index = k;
 				}
-				min = MIN(min, scores[k]);
-				// printf("%.3f ", scores[k]);
-				fprintf(fs, "%f ", scores[k]);
+			// 	min = MIN(min, scores[k]);
+			// 	// printf("%.3f ", scores[k]);
+			// 	fprintf(fs, "%f ", scores[k]);
       }
-      fprintf(fs, "\n");
+      // fprintf(fs, "\n");
 
-      double avg_score = sum / population_power;
-      printf("Min score: %f Max score: %f(%d) Avg score: %f\n",
-						 min, max, max_index, avg_score);
-      fprintf(f, "%f,%f,%f\n", min, max, avg_score);
-
-			{
-				double variance = 0.0;
-
-				for (k = 0; k < population_power; ++k) {
-					variance += pow(scores[k] - avg_score, 2);
-				}
-				variance /= population_power;
-				mean_variance += variance;
-			}
+      // double avg_score = sum / population_power;
+      // printf("Min score: %f Max score: %f(%d) Avg score: %f\n",
+			// 			 min, max, max_index, avg_score);
+      // fprintf(f, "%f,%f,%f\n", min, max, avg_score);
 
       if (max > last_best_score) {
 				last_best_score = max;
@@ -472,18 +460,13 @@ void tune_lfs_cpu_impl(
 
 #pragma omp flush(last_best_score,last_best_update_it)
 	
-				printf(">[%3d] Found new best chromosome with score: %f\n", it, max);
+				// printf(">[%3d] Found new best chromosome with score: %f\n", it, max);
 
 				convert_to_gauss_params(fset_offsets, fset_lens, n, population[max_index].fsets, fsets);
 				memcpy(rules, population[max_index].rules, sizeof(signed char[rules_len * (n+1)]));
-
-				unsigned local_ys[N], correct = 0;
-				predict_cpu_impl(fset_lens, fsets, n, rules, rules_len, uxxs, local_ys, N);
-				for (unsigned i = 0; i < N; ++i) correct += local_ys[i] == ys[i];
-				printf("Score: %f\n", (float)correct / N);
       }
 
-      printf("pc = %f, pm_fsets = %f, pm_rules = %f\n", pc, pm_fsets, pm_rules);
+      // printf("pc = %f, pm_fsets = %f, pm_rules = %f\n", pc, pm_fsets, pm_rules);
     }
     
 #pragma omp single
@@ -510,12 +493,8 @@ void tune_lfs_cpu_impl(
 
     SWAP(population, new_population);
   }
-// #pragma omp barrier
-	printf("Mean variance: %f\n", mean_variance);
-  printf("Evolution finished...\n");
-  fclose(f);
-  fclose(fs);
-  fclose(fpp);
+  // printf("Evolution finished...\n");
+  // fclose(f);
 
   destroy_population(new_population, population_power);
   destroy_population(population, population_power);

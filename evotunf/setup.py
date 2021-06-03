@@ -64,7 +64,7 @@ cy_extensions = [
         extra_compile_args={
             'gcc': ['-g3', '-Og', '-fopenmp'],
             'g++': ['-g3', '-Og', '-fopenmp', '-fPIC'],
-            'nvcc': ['--std=c++14', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O0,-v', '--compiler-options', '-fPIC']
+            'nvcc': ['--std=c++14', '-lineinfo', '--maxrregcount=32', '--ptxas-options', '-O3,-v', '--compiler-options', '-fPIC']
         },
         extra_link_args=['-fopenmp', '-Og', '-g3'],
     )

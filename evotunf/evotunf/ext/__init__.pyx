@@ -1,4 +1,5 @@
 import cython
+from time import time
 
 import numpy as np
 cimport numpy as np
@@ -54,8 +55,11 @@ def tune_lfs_cpu(np.ndarray[unsigned, ndim=1, mode='c'] fset_lens not None,
     N, n = uxxs.shape[0], uxxs.shape[1]
     cdef np.ndarray[GaussParams, ndim=1, mode="c"] fsets = np.zeros(sum(fset_lens), dtype=GaussParamsDtype)
     cdef np.ndarray[signed char, ndim=2, mode="c"] rules = np.zeros((rules_len, n+1), dtype=np.int8)
+    start = time()
     tune_lfs_cpu_impl(&fset_lens[0], n, rules_len, &uxxs[0, 0], &ys[0], N,
                       population_power, iterations, &fsets[0], &rules[0, 0])
+    end = time()
+    print(f"Duration: {end - start}")
     return fsets, rules
             
 
@@ -92,8 +96,11 @@ def tune_lfs_gpu(
     N, n = uxxs.shape[0], uxxs.shape[1]
     cdef np.ndarray[GaussParams, ndim=1, mode="c"] fsets = np.zeros(sum(fsets_lens), dtype=GaussParamsDtype)
     cdef np.ndarray[signed char, ndim=2, mode="c"] rules = np.zeros((rules_len, n+1), dtype=np.int8)
+    start = time()
     tune_lfs_gpu_impl(&fsets_lens[0], n, rules_len,
                       &uxxs[0, 0], &ys[0], N,
                       population_power, iterations,
                       &fsets[0], &rules[0, 0])
+    end = time()
+    print(f"Duration: {end - start}")
     return fsets, rules
