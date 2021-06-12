@@ -30,7 +30,7 @@ const signed char samples[][7] = {
 };
 
 const unsigned population_power = 100;
-const unsigned iterations_number = 50;
+const unsigned iterations_number = 150;
 
 
 static void build_uxxs(const unsigned fset_lens[], const signed char samples[][7], GaussParams uxxs[][6], unsigned n, unsigned N)

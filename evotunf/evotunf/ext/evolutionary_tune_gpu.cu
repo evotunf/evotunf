@@ -43,10 +43,6 @@ static void init_device_props()
 	CUDA_CALL(cudaGetDeviceProperties(&device_props, device));
 }
 
-// #if 0
-// #define USE_CONSTANT_MEMORY_OPTIMIZATION
-// #endif
-
 #define SIGN(x) ((typeof(x))(((x) < 0) ? -1 : 1))
 #define GAUSS(mu, sigma, x) exp(-pow(((x) - (mu)) / (sigma), 2))
 #define TNORM(a, b) fminf(a, b)
@@ -60,12 +56,9 @@ typedef struct __align__(8) Fraction {
 	float numerator, denominator;
 } Fraction;
 
+texture<float2> uxxs_tex;
+texture<unsigned> ys_tex;
 
-#ifdef USE_CONSTANT_MEMORY_OPTIMIZATION
-#define CONST_LEN (64 * 1024 / (sizeof(GaussParams)+1))
-__constant__ GaussParams uxxs_const[CONST_LEN];
-__constant__ unsigned ys_const[CONST_LEN];
-#endif
 
 template <typename GaussParamsT>
 __host__ __device__ static GaussParams make_gauss_params(GaussParamsT gp, unsigned i = 0, unsigned n = 1)
@@ -124,7 +117,9 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 		if (threadIdx.x == 0) rules_cache[k * (n+1) + n] = rules[k * (n+1) + n];
 	}
 	if (threadIdx.y == 0) uxx_cache[i] = uxx_batch[thread_group_idx * n + i];
+	// if (threadIdx.y == 0) ((float2*)uxx_cache)[i] = tex1Dfetch(uxxs_tex, blockIdx.x * n + i);
 
+	// return uxx_cache[threadIdx.x].mu > fsets_cache[b_fset_offset + rules_cache[k * (n+1) + n]].mu;
 	__syncthreads();
 
 	signed char y = rules_cache[k * (n+1) + n];
@@ -153,11 +148,17 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 		// if (blockIdx.y == 7) printf("%d %d %d %d %f\n", blockIdx.x * batch_len + threadIdx.z, threadIdx.y, j, threadIdx.x, max_tnorm);
 		max_tnorm_cache[i] = max_tnorm;
 		__syncthreads();
-		for (unsigned step = 1; step < n; step <<= 1) {
-			if (!(i & ((step<<1)-1)) && i + step < n) {
-				max_tnorm_cache[i] = fmaxf(max_tnorm_cache[i], max_tnorm_cache[i + step]);
+		// for (unsigned step = 1; step < n; step <<= 1) {
+			// if (!(i & ((step<<1)-1)) && i + step < n) {
+		{
+			unsigned step = (n+n/2-1)/2;
+			if (i + step < n) { max_tnorm_cache[i] = fmaxf(max_tnorm_cache[i], max_tnorm_cache[i + step]); __syncthreads(); }
+			for (step /= 2; step > 0; step >>= 1) {
+				if (i < step) {
+					max_tnorm_cache[i] = fmaxf(max_tnorm_cache[i], max_tnorm_cache[i + step]);
+				}
+				__syncthreads();
 			}
-			__syncthreads();
 		}
 		if (threadIdx.x == 0 && max_tnorm_cache[0] > 0.f) cross = fminf(cross, max_tnorm_cache[0]);
 	}
@@ -170,9 +171,16 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 
 	__syncthreads();
 
-	if (idx < rules_len) {
-		for (unsigned step = 1; step < rules_len; step <<= 1) {
-			if (!(idx & ((step<<1)-1)) && idx + step < rules_len) {
+	if (idx < rules_len/2) {
+		unsigned step = (rules_len+rules_len/2-1)/2;
+		if (idx + step < rules_len) {
+			fractions_cache[idx].numerator += fractions_cache[idx + step].numerator;
+			fractions_cache[idx].denominator += fractions_cache[idx + step].denominator;
+			__syncthreads();
+		}
+		for (step /= 2; step > 0; step >>= 1) {
+			// if (!(idx & ((step<<1)-1)) && idx + step < rules_len) {
+			if (idx < step) {
 				fractions_cache[idx].numerator += fractions_cache[idx + step].numerator;
 				fractions_cache[idx].denominator += fractions_cache[idx + step].denominator;
 			}
@@ -235,7 +243,7 @@ void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsig
 	}
 	
 	unsigned *fset_lens_d, *fset_offsets_d;
-	GaussParams *fsets_d, *uxx_table_d;
+	GaussParams *fsets_d, *uxxs_d;
 	signed char *rules_d;
 	unsigned *ys_d;
 	size_t uxx_table_pitch;
@@ -250,13 +258,13 @@ void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsig
 	CUDA_CALL(cudaMemcpy(fsets_d, fsets, sizeof(GaussParams[fsets_total_len]), cudaMemcpyHostToDevice));
 	CUDA_CALL(cudaMalloc(&rules_d, sizeof(signed char[rules_len][n+1])));
 	CUDA_CALL(cudaMemcpy(rules_d, rules, sizeof(signed char[rules_len][n+1]), cudaMemcpyHostToDevice));
-	CUDA_CALL(cudaMallocPitch(&uxx_table_d, &uxx_table_pitch, sizeof(GaussParams[batch_len][n]), (N + batch_len - 1) / batch_len));
+	CUDA_CALL(cudaMallocPitch(&uxxs_d, &uxx_table_pitch, sizeof(GaussParams[batch_len][n]), (N + batch_len - 1) / batch_len));
 	{
 		unsigned last_batch_len = N % batch_len, last_batch_idx = N / batch_len;
-		CUDA_CALL(cudaMemcpy2D(uxx_table_d, uxx_table_pitch, uxxs, sizeof(GaussParams[batch_len][n]),
+		CUDA_CALL(cudaMemcpy2D(uxxs_d, uxx_table_pitch, uxxs, sizeof(GaussParams[batch_len][n]),
 													 sizeof(GaussParams[batch_len][n]), N / batch_len, cudaMemcpyHostToDevice));
 		if (last_batch_len > 0) {
-			CUDA_CALL(cudaMemcpy(uxx_table_d + last_batch_idx * uxx_table_pitch,
+			CUDA_CALL(cudaMemcpy(uxxs_d + last_batch_idx * uxx_table_pitch,
 													 uxxs + sizeof(GaussParams[N / batch_len][batch_len][n]),
 													 sizeof(GaussParams[last_batch_len][n]), cudaMemcpyHostToDevice));
 		}
@@ -273,7 +281,7 @@ void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsig
 												/* fractions */ ALIGN_UP(sizeof(Fraction[batch_len][rules_len]), SHARED_MEM_ALIGNMENT));
 		perform_inference_kernel<<<blocks, threads, shared_sz>>>(fsets_total_len, fset_lens_d, fset_offsets_d,
 																														 fsets_d, n, rules_d, rules_len,
-																														 uxx_table_d, uxx_table_pitch, batch_len, ys_d, N);
+																														 uxxs_d, uxx_table_pitch, batch_len, ys_d, N);
 		cudaDeviceSynchronize();
 		CUDA_CALL(cudaPeekAtLastError());
 
@@ -282,7 +290,7 @@ void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsig
 	CUDA_CALL(cudaMemcpy(ys, ys_d, sizeof(unsigned[N]), cudaMemcpyDeviceToHost));
 
 	CUDA_CALL(cudaFree(ys_d));
-	CUDA_CALL(cudaFree(uxx_table_d));
+	CUDA_CALL(cudaFree(uxxs_d));
 	CUDA_CALL(cudaFree(rules_d));
 	CUDA_CALL(cudaFree(fsets_d));
 	CUDA_CALL(cudaFree(fset_offsets_d));
@@ -329,7 +337,7 @@ static void compute_scores(unsigned population_power,
 													 const unsigned *fset_lens_d, const unsigned *fset_offsets_d, unsigned n,
 													 const GaussEvoParams *fsets_table_d, size_t fsets_table_pitch, unsigned fsets_total_len,
 													 const signed char *rules_table_d, size_t rules_table_pitch, unsigned rules_len,
-													 const GaussParams *uxx_table_d, size_t uxx_table_pitch, const unsigned *ys_d,
+													 const GaussParams *uxxs_d, size_t uxx_table_pitch, const unsigned *ys_d,
 													 unsigned batch_len, unsigned N, float *scores_d)
 {
 	// static_assert(sizeof(unsigned) == sizeof(float));
@@ -348,7 +356,7 @@ static void compute_scores(unsigned population_power,
 		compute_scores_kernel<<<blocks, threads, shared_sz>>>(fset_lens_d, fset_offsets_d, n,
 																													fsets_table_d, fsets_table_pitch, fsets_total_len,
 																													rules_table_d, rules_table_pitch, rules_len,
-																													uxx_table_d, uxx_table_pitch, ys_d,
+																													uxxs_d, uxx_table_pitch, ys_d,
 																													N, scores_d);
 		CUDA_CALL(cudaPeekAtLastError());
 	}
@@ -721,7 +729,7 @@ void tune_lfs_gpu_impl(
 
 	GaussEvoParams *fsets_table_d, *new_fsets_table_d;
 	signed char *rules_table_d, *new_rules_table_d;
-	GaussParams *uxx_table_d;
+	GaussParams *uxxs_d;
 	unsigned *ys_d, *indices_d;
 	float *scores_d;
 	size_t fsets_table_pitch, rules_table_pitch, uxx_table_pitch;
@@ -731,33 +739,30 @@ void tune_lfs_gpu_impl(
 	CUDA_CALL(cudaMallocPitch(&new_fsets_table_d, &fsets_table_pitch, sizeof(GaussEvoParams[fsets_total_len]), population_power));
 	CUDA_CALL(cudaMallocPitch(&rules_table_d, &rules_table_pitch, sizeof(signed char[rules_len*(n+1)]), population_power));
 	CUDA_CALL(cudaMallocPitch(&new_rules_table_d, &rules_table_pitch, sizeof(signed char[rules_len*(n+1)]), population_power));
-#ifdef USE_CONSTANT_MEMORY_OPTIMIZATION
-	if (sizeof(GaussParams[N][n]) + sizeof(unsigned[N]) <= device_props.totalConstMem)
+	// {
+	// 	CUDA_CALL(cudaMalloc(&uxxs_d, sizeof(GaussParams[N][n])));
+	// 	CUDA_CALL(cudaMemcpy(uxxs_d, uxxs, sizeof(GaussParams[N][n]), cudaMemcpyHostToDevice));
+	// 	CUDA_CALL(cudaMalloc(&ys_d, sizeof(unsigned[N])));
+	// 	CUDA_CALL(cudaMemcpy(ys_d, ys, sizeof(unsigned[N]), cudaMemcpyHostToDevice));
+	// 	uxx_table_pitch = sizeof(GaussParams[batch_len][n]);
+	// 	CUDA_CALL(cudaBindTexture(NULL, uxxs_tex, uxxs_d, sizeof(GaussParams[N][n])));
+	// 	CUDA_CALL(cudaBindTexture(NULL, ys_tex, ys_d, sizeof(unsigned[N])));
+	// }
+	{
+		CUDA_CALL(cudaMallocPitch(&uxxs_d, &uxx_table_pitch, sizeof(GaussParams[batch_len][n]), (N + batch_len - 1) / batch_len));
 		{
-			// printf("dataset stored in constant memory\n");
-			CUDA_CALL(cudaMemcpyToSymbol(uxxs_const, uxxs, sizeof(GaussParams[N])));
-			CUDA_CALL(cudaMemcpyToSymbol(ys_const, ys, sizeof(unsigned[N])));
-			uxx_table_d = uxxs_const;
-			uxx_table_pitch = sizeof(GaussParams[batch_len]);
-			ys_d = ys_const;
-		}
-	else
-#endif
-		{
-			CUDA_CALL(cudaMallocPitch(&uxx_table_d, &uxx_table_pitch, sizeof(GaussParams[batch_len][n]), (N + batch_len - 1) / batch_len));
-			{
-				unsigned last_batch_len = N % batch_len, last_batch_idx = N / batch_len;
-				CUDA_CALL(cudaMemcpy2D(uxx_table_d, uxx_table_pitch, uxxs, sizeof(GaussParams[batch_len][n]),
-															 sizeof(GaussParams[batch_len][n]), N / batch_len, cudaMemcpyHostToDevice));
-				if (last_batch_len > 0) {
-					CUDA_CALL(cudaMemcpy(uxx_table_d + last_batch_idx * uxx_table_pitch,
-															 uxxs + sizeof(GaussParams[N / batch_len][batch_len][n]),
-															 sizeof(GaussParams[last_batch_len][n]), cudaMemcpyHostToDevice));
-				}
+			unsigned last_batch_len = N % batch_len, last_batch_idx = N / batch_len;
+			CUDA_CALL(cudaMemcpy2D(uxxs_d, uxx_table_pitch, uxxs, sizeof(GaussParams[batch_len][n]),
+														 sizeof(GaussParams[batch_len][n]), N / batch_len, cudaMemcpyHostToDevice));
+			if (last_batch_len > 0) {
+				CUDA_CALL(cudaMemcpy(uxxs_d + last_batch_idx * uxx_table_pitch,
+														 uxxs + sizeof(GaussParams[N / batch_len][batch_len][n]),
+														 sizeof(GaussParams[last_batch_len][n]), cudaMemcpyHostToDevice));
 			}
-			CUDA_CALL(cudaMalloc(&ys_d, sizeof(unsigned[N])));
-			CUDA_CALL(cudaMemcpy(ys_d, ys, sizeof(unsigned[N]), cudaMemcpyHostToDevice));
 		}
+		CUDA_CALL(cudaMalloc(&ys_d, sizeof(unsigned[N])));
+		CUDA_CALL(cudaMemcpy(ys_d, ys, sizeof(unsigned[N]), cudaMemcpyHostToDevice));
+	}
 	CUDA_CALL(cudaMalloc(&scores_d, sizeof(float[population_power])));
 	CUDA_CALL(cudaMalloc(&indices_d, sizeof(unsigned[population_power])));
 
@@ -785,7 +790,7 @@ void tune_lfs_gpu_impl(
 									 fset_lens_d, fset_offsets_d, n,
 									 fsets_table_d, fsets_table_pitch, fsets_total_len,
 									 rules_table_d, rules_table_pitch, rules_len,
-									 uxx_table_d, uxx_table_pitch, ys_d, batch_len, N, scores_d);
+									 uxxs_d, uxx_table_pitch, ys_d, batch_len, N, scores_d);
 
 		CUDA_CALL(cudaMemcpy(scores_copy_d, scores_d, sizeof(float[population_power]), cudaMemcpyDeviceToDevice));
 
@@ -839,10 +844,7 @@ void tune_lfs_gpu_impl(
 	CUDA_CALL(cudaFree(scores_copy_d));
 	CUDA_CALL(cudaFree(scores_d));
 	CUDA_CALL(cudaFree(ys_d));
-#ifdef USE_CONSTANT_MEMORY_OPTIMIZATION
-	if (!(uxx_table_d == uxxs_const && ys_d == ys_const))
-#endif
-		CUDA_CALL(cudaFree(uxx_table_d));
+  CUDA_CALL(cudaFree(uxxs_d));
 	CUDA_CALL(cudaFree(new_rules_table_d));
 	CUDA_CALL(cudaFree(rules_table_d));
 	CUDA_CALL(cudaFree(new_fsets_table_d));
