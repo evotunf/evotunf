@@ -61,7 +61,7 @@ def tune_lfs_cpu(np.ndarray[unsigned, ndim=1, mode='c'] fset_lens not None,
     end = time()
     print(f"Duration: {end - start}")
     return fsets, rules
-            
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -73,12 +73,13 @@ def predict_gpu(
 
     cdef unsigned n, rules_len, N
     n, rules_len, N = rules.shape[1]-1, rules.shape[0], uxxs.shape[0]
+    print(n, rules_len, N)
     cdef np.ndarray[unsigned, ndim=1, mode='c'] ys = np.zeros(N, dtype=np.uint32)
     predict_gpu_impl(&fsets_lens[0], &fsets_table[0], n,
                      &rules[0, 0], rules_len,
                      &uxxs[0, 0], &ys[0], N)
     return ys
-        
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <assert.h>
 #include "random.h"
 #include "ga_params.h"
 #include "evolutionary_tune.h"
@@ -59,6 +60,7 @@ static void init_population(const unsigned *fset_offsets, const unsigned *fset_l
 
     for (i = 0; i < n+1; ++i) {
       for (j = 0; j < fset_lens[i]; ++j) {
+        // printf("fsets %d %d\n", i, j);
 				/* fsets[fset_offsets[i] + j].mu = (float)(j+1) / (fset_lens[i]+1); // rnd_prob(); */
 				/* fsets[fset_offsets[i] + j].sigma = 1.f / (fset_lens[i]+1); */
 				fsets[fset_offsets[i] + j].s_mu = 10;
@@ -68,10 +70,11 @@ static void init_population(const unsigned *fset_offsets, const unsigned *fset_l
 
     for (j = 0; j < rules_len; ++j) {
       for (i = 0; i < n; ++i) {
-				/* rules[j * (n+1) + i] = true_rules[j][i]; */
+				rules[j * (n+1) + i] = true_rules[j][i];
 				rules[j * (n+1) + i] = (signed char) rnd() % (fset_lens[i]+1);
+        // printf("rules %02d %02d %02d %d\n", k, j, i, rules[j * (n+1) + i]);
       }
-      /* rules[j * (n+1) + n] = true_rules[j][n]; */
+      // rules[j * (n+1) + n] = true_rules[j][n];
       rules[j * (n+1) + n] = (signed char) rnd() % fset_lens[n] + 1;
     }
   }
@@ -87,7 +90,7 @@ static void destroy_population(Chromosome *population, unsigned population_power
     free((void*)population[k].rules);
   }
 }
-  
+
 
 #define TAU_DISCRETIZATION_DIM 20
 #define TAU_DISCRETIZATION_STEP (1.f / TAU_DISCRETIZATION_DIM)
@@ -111,7 +114,7 @@ static unsigned classify_fuzzy(
 															 const unsigned *fset_offsets, const unsigned *fset_lens, unsigned fsets_total_len,
 															 const GaussParamsT *fsets, unsigned n,
 															 const signed char *rules, unsigned rules_len,
-															 const GaussParams *uxx)
+															 const GaussParams *uxx, unsigned idx = 0)
 {
   unsigned i, j, k, l;
   double numerator = 0., denominator = 0.;
@@ -125,24 +128,26 @@ static unsigned classify_fuzzy(
     for (j = 0; j < rules_len; ++j) {
       signed char b = rules[j * (n+1) + n];
       GaussParams ub = make_gauss_params(fsets[fset_offsets[n] + (b-1)], b-1, fset_lens[n]);
-      float ub_value = GAUSS(ub.mu, ub.sigma, uy_center); // (b<0) + SIGN(b) * GAUSS(ub.mu, ub.sigma, ub_center);
-      float max_tnorm = 0.f;
+      float ub_value = GAUSS(ub.mu, ub.sigma, uy_center);
+      float max_tnorm = -INFINITY;
 
       for (i = 0; i < n; ++i) {
 				signed char a = rules[j * (n+1) + i];
 
 				if (a == 0) continue;
-	
+
 				GaussParams ua = make_gauss_params(fsets[fset_offsets[i] + (a-1)], a-1, fset_lens[i]);
 				GaussParams ux = uxx[i];
 				float t;
+
+        printf("%02d %02d %02d %02d %f %f %f\n", idx, k, j, i, GAUSS(ua.mu, ua.sigma, 0.5), ub_value, GAUSS(ux.mu, ux.sigma, 0.5));
 
 				for (t = 0.f; t <= 1.01f; t += 0.05f) {
 					max_tnorm = fmax(max_tnorm, fmin(GAUSS(ux.mu, ux.sigma, t),
 																					 IMPL(GAUSS(ua.mu, ua.sigma, t), ub_value)));
 				}
       }
-      if (max_tnorm > 0.f) cross = fmin(cross, max_tnorm);
+      if (max_tnorm != -INFINITY) cross = fmin(cross, max_tnorm);
     }
     numerator += uy_center * cross;
     denominator += cross;
@@ -156,7 +161,7 @@ static unsigned classify_fuzzy(
     for (j = 0; j < fset_lens[n]; ++j) {
       GaussParams ub = make_gauss_params(fsets[fset_offsets[n] + j], j, fset_lens[n]);
       float uy_value = GAUSS(ub.mu, ub.sigma, uy_center);
-      
+
       if (uy_value > max_uy_value) {
 				max_uy_value = uy_value;
 				max_uy_index = j;
@@ -181,23 +186,12 @@ void predict_cpu_impl(
     fsets_total_len += fset_lens[i];
   }
 
-  /* for (i = 0; i < fsets_total_len; ++i) printf("%f %f\n", fsets[i].mu, fsets[i].sigma); */
-  /* for (k = 0; k < rules_len; ++k) { */
-  /*   for (i = 0; i < n+1; ++i) printf("%d ", rules[k * (n+1) + i]); */
-  /*   printf("\n"); */
-  /* } */
-
-  /* printf("fsets_total_len=%d, n=%d, rules_len=%d, N=%d\n", fsets_total_len, n, rules_len, N); */
-
 #pragma omp parallel for ordered schedule(dynamic, 5)
   for (k = 0; k < N; ++k) {
 #pragma omp ordered
     {
       ys[k] = classify_fuzzy(fset_offsets, fset_lens, fsets_total_len,
 														 fsets, n, rules, rules_len, uxxs + k * n);
-      /* printf("%d: ", k); */
-      /* for (unsigned j = 0; j < n; ++j) printf("(%.3f %.3f) ", uxxs[k*n + j].mu, uxxs[k*n + j].sigma); */
-      /* printf("%d\n", ys[k]); */
     }
   }
 }
@@ -214,7 +208,7 @@ static float compute_score(const unsigned *fset_offsets, const unsigned *fset_le
   for (i = 0; i < N; ++i) {
     unsigned pred = classify_fuzzy(fset_offsets, fset_lens, fsets_total_len,
 																	 chromosome->fsets, n, chromosome->rules, rules_len,
-																	 uxxs + i * n);
+																	 uxxs + i * n, i);
     error += pred != ys[i];
   }
   return (float)(N - error) / N; // -(error / N);
@@ -307,7 +301,7 @@ static void perform_crossingover(unsigned fsets_total_len, unsigned n, unsigned 
   unsigned i, pos = rnd() % (fsets_total_len + rules_len * (n+1));
   // unsigned i, pos = rnd() % (rules_len * (n+1)) + fsets_total_len; // NOTE(sergey): Temporary learn only rules
 	// TODO(sergey): Now we decide to only perform crossingover on rules.
-  
+
   /* printf("fsets_total_len=%d cha->fsets=%p chb->fsets=%p\n", */
   /* 	 fsets_total_len, cha->fsets, chb->fsets); */
   if (pos < fsets_total_len) {
@@ -387,6 +381,7 @@ void tune_lfs_cpu_impl(
     fsets_total_len += fset_lens[i];
   }
 
+  // assert(population_power % 2 == 0);
   printf("fsets_total_len=%d, n=%d, rules_len=%d, population_power=%d, iterations_number=%d, N=%d\n",
 				 fsets_total_len, n, rules_len, population_power, iterations_number, N);
 
@@ -424,34 +419,33 @@ void tune_lfs_cpu_impl(
     /* float a = exp(-(float) iterations_number / (it + 1.f)); */
     /* float pc = (1.f - a) * pc0 + a * pc1; */
     /* float pm = (1.f - a) * pm0 + a * pm1; */
-    
+
 #pragma omp for schedule(dynamic)
     for (k = 0; k < population_power; ++k) {
       scores[k] = compute_score(fset_offsets, fset_lens, fsets_total_len,
 																n, rules_len, population + k, uxxs, ys, N);
     }
-
 #pragma omp single nowait
     {
       double sum = 0.0f, min = +INFINITY, max = -INFINITY;
       unsigned max_index = 0;
-      
-      // printf("[Iteration %3d] ", it);
+
+      printf("[Iteration %3d] ", it);
       for (k = 0; k < population_power; ++k) {
-			// 	// sum += scores[k];
+				sum += scores[k];
 				if (scores[k] > max) {
 					max = scores[k];
 					max_index = k;
 				}
-			// 	min = MIN(min, scores[k]);
+				min = MIN(min, scores[k]);
 			// 	// printf("%.3f ", scores[k]);
 			// 	fprintf(fs, "%f ", scores[k]);
       }
       // fprintf(fs, "\n");
 
-      // double avg_score = sum / population_power;
-      // printf("Min score: %f Max score: %f(%d) Avg score: %f\n",
-			// 			 min, max, max_index, avg_score);
+      double avg_score = sum / population_power;
+      printf("Min score: %f Max score: %f(%d) Avg score: %f\n",
+						 min, max, max_index, avg_score);
       // fprintf(f, "%f,%f,%f\n", min, max, avg_score);
 
       if (max > last_best_score) {
@@ -459,7 +453,7 @@ void tune_lfs_cpu_impl(
 				last_best_update_it = it;
 
 #pragma omp flush(last_best_score,last_best_update_it)
-	
+
 				// printf(">[%3d] Found new best chromosome with score: %f\n", it, max);
 
 				convert_to_gauss_params(fset_offsets, fset_lens, n, population[max_index].fsets, fsets);
@@ -468,7 +462,7 @@ void tune_lfs_cpu_impl(
 
       // printf("pc = %f, pm_fsets = %f, pm_rules = %f\n", pc, pm_fsets, pm_rules);
     }
-    
+
 #pragma omp single
 		perform_selection(scores, indices, population_power);
 
@@ -485,7 +479,7 @@ void tune_lfs_cpu_impl(
     }
 
 // #pragma omp barrier
-		
+
 #pragma omp for schedule(dynamic, 4)
     for (k = 0; k < population_power; ++k) {
       perform_mutation(fset_lens, fsets_total_len, n, rules_len, new_population + k, pm_fsets, pm_rules);

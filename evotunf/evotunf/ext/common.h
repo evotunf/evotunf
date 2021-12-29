@@ -31,4 +31,21 @@
   })
 #endif
 
+#ifdef __cplusplus
+#define __auto_type auto
+#endif
+
+#define ROUND_UP_TO_POW2(x)                     \
+  ({                                            \
+    unsigned v = (x);                        \
+                                                \
+    --v;                                        \
+    v |= v >> 1;                                \
+    v |= v >> 2;                                \
+    v |= v >> 4;                                \
+    v |= v >> 8;                                \
+    v |= v >> 16;                               \
+    ++v;                                        \
+  })
+
 #endif // EVOTUNF_COMMON_H

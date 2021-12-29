@@ -1,6 +1,7 @@
 #include <utility>
 #include <stdlib.h>
 #include <stdio.h>
+// #include <math.h>
 #include <assert.h>
 #include <curand_kernel.h>
 #include <curand_mtgp32_host.h>
@@ -80,7 +81,6 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 																	 const signed char *rules,
 																	 const GaussParams *uxx_batch)
 {
-	// unsigned j, step;
 	unsigned batch_len = blockDim.z;
 	unsigned thread_group_idx = threadIdx.z;
 	const unsigned k = threadIdx.y;
@@ -119,7 +119,6 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 	if (threadIdx.y == 0) uxx_cache[i] = uxx_batch[thread_group_idx * n + i];
 	// if (threadIdx.y == 0) ((float2*)uxx_cache)[i] = tex1Dfetch(uxxs_tex, blockIdx.x * n + i);
 
-	// return uxx_cache[threadIdx.x].mu > fsets_cache[b_fset_offset + rules_cache[k * (n+1) + n]].mu;
 	__syncthreads();
 
 	signed char y = rules_cache[k * (n+1) + n];
@@ -127,12 +126,12 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 	float uy_center = fsets_cache[b_fset_offset + (y-1)].mu; //make_gauss_params(fsets_cache[b_fset_offset + (y-1)], y-1, b_fset_len).mu;
 
 	float cross = 1.f;
-
+	
 	for (unsigned j = 0; j < rules_len; ++j) {
 		signed char a = rules_cache[j * (n+1) + i];
 		signed char b = rules_cache[j * (n+1) + n];
 
-		float max_tnorm = 0.0f;
+		float max_tnorm = -INFINITY;
 
 		if (a) {
 			GaussParams ua = fsets_cache[a_fset_offset + (a-1)];//make_gauss_params(fsets_cache[a_fset_offset + (a-1)], a-1, a_fset_len);
@@ -145,46 +144,41 @@ __device__ unsigned classify_fuzzy(unsigned fsets_total_len, const unsigned *fse
 				max_tnorm = fmaxf(max_tnorm, tnorm);
 			}
 		}
-		// if (blockIdx.y == 7) printf("%d %d %d %d %f\n", blockIdx.x * batch_len + threadIdx.z, threadIdx.y, j, threadIdx.x, max_tnorm);
 		max_tnorm_cache[i] = max_tnorm;
 		__syncthreads();
-		// for (unsigned step = 1; step < n; step <<= 1) {
-			// if (!(i & ((step<<1)-1)) && i + step < n) {
+
 		{
-			unsigned step = (n+n/2-1)/2;
-			if (i + step < n) { max_tnorm_cache[i] = fmaxf(max_tnorm_cache[i], max_tnorm_cache[i + step]); __syncthreads(); }
-			for (step /= 2; step > 0; step >>= 1) {
-				if (i < step) {
-					max_tnorm_cache[i] = fmaxf(max_tnorm_cache[i], max_tnorm_cache[i + step]);
+			unsigned step = ROUND_UP_TO_POW2(n)/2;
+			if (i < (n-step)) {
+				for (; step > 0; step >>= 1) {
+					if (i < step) {
+						max_tnorm_cache[i] = fmaxf(max_tnorm_cache[i], max_tnorm_cache[i + step]);
+					}
+					// __syncthreads();
 				}
-				__syncthreads();
 			}
 		}
-		if (threadIdx.x == 0 && max_tnorm_cache[0] > 0.f) cross = fminf(cross, max_tnorm_cache[0]);
+		__syncthreads();
+		if (threadIdx.x == 0 && max_tnorm_cache[0] != -INFINITY) cross = fminf(cross, max_tnorm_cache[0]);
 	}
 
 	if (threadIdx.x == 0) {
-		// printf("%f\n", cross);
 		fractions_cache[k].numerator = uy_center * cross;
 		fractions_cache[k].denominator = cross;
 	}
 
 	__syncthreads();
 
-	if (idx < rules_len/2) {
-		unsigned step = (rules_len+rules_len/2-1)/2;
-		if (idx + step < rules_len) {
-			fractions_cache[idx].numerator += fractions_cache[idx + step].numerator;
-			fractions_cache[idx].denominator += fractions_cache[idx + step].denominator;
-			__syncthreads();
-		}
-		for (step /= 2; step > 0; step >>= 1) {
-			// if (!(idx & ((step<<1)-1)) && idx + step < rules_len) {
-			if (idx < step) {
-				fractions_cache[idx].numerator += fractions_cache[idx + step].numerator;
-				fractions_cache[idx].denominator += fractions_cache[idx + step].denominator;
+	{
+		unsigned step = ROUND_UP_TO_POW2(rules_len)/2;
+		if (idx < (rules_len-step)) {
+			for (; step > 0; step >>= 1) {
+				if (idx < step) {
+					fractions_cache[idx].numerator += fractions_cache[idx + step].numerator;
+					fractions_cache[idx].denominator += fractions_cache[idx + step].denominator;
+				}
+				__syncthreads();
 			}
-			__syncthreads();
 		}
 	}
 
@@ -241,13 +235,13 @@ void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsig
 		fset_offsets[i] = fsets_total_len;
 		fsets_total_len += fset_lens[i];
 	}
-	
+
 	unsigned *fset_lens_d, *fset_offsets_d;
 	GaussParams *fsets_d, *uxxs_d;
 	signed char *rules_d;
 	unsigned *ys_d;
 	size_t uxx_table_pitch;
-	unsigned batch_len = 2;
+	unsigned batch_len = 1;
 
 	CUDA_CALL(cudaPeekAtLastError());
 	CUDA_CALL(cudaMalloc(&fset_lens_d, sizeof(unsigned[n+1])));
@@ -284,7 +278,6 @@ void predict_gpu_impl(const unsigned *fset_lens, const GaussParams *fsets, unsig
 																														 uxxs_d, uxx_table_pitch, batch_len, ys_d, N);
 		cudaDeviceSynchronize();
 		CUDA_CALL(cudaPeekAtLastError());
-
 	}
 
 	CUDA_CALL(cudaMemcpy(ys, ys_d, sizeof(unsigned[N]), cudaMemcpyDeviceToHost));
@@ -317,6 +310,7 @@ __global__ void compute_scores_kernel(const unsigned *fset_lens, const unsigned 
 		const GaussParams *uxx_batch = (const GaussParams*)((const char*)uxx_table + batch_idx * uxx_table_pitch);
 		unsigned pred = classify_fuzzy(fsets_total_len, fset_lens, fset_offsets,
 																	 fsets, rules, uxx_batch);
+		// if (threadIdx.x == 0 && threadIdx.y == 0) printf("%03d %03d\n", blockIdx.y, blockIdx.x * blockDim.z + threadIdx.z);
 		if (threadIdx.x == 0 && threadIdx.y == 0) {
 			atomicAdd(equals_number + chromosome_idx, pred == ys[idx]);
 		}
@@ -407,7 +401,7 @@ static void init_population(curandStateMtgp32 *states_d, unsigned population_pow
 		CUDA_CALL(cudaMemcpy((GaussEvoParams*)((char*)fsets_table_d + i * fsets_table_pitch), fsets,
 												 sizeof(GaussEvoParams[fsets_total_len]), cudaMemcpyHostToDevice));
 	}
-		
+
 	{
 		unsigned blocks = MIN(population_power, 200);
 		unsigned threads = MIN(rules_len, 256);
@@ -485,7 +479,7 @@ __global__ void perform_crossingover_kernel(const float *random_values, const un
 	signed char *new_rules_b = new_rules_table + (2*k+1) * rules_table_pitch;
 
 	unsigned total_len = fsets_total_len + rules_len * (n+1);
-	
+
 	if (random_values[2*k] < pc) {
 		unsigned pos = (unsigned)(random_values[2*k+1] * (total_len-2)) + 1;
 
@@ -564,8 +558,10 @@ __global__ void perform_fsets_mutation_kernel(curandStateMtgp32 *states, unsigne
 		GaussEvoParams *fsets = (GaussEvoParams*)((char*)fsets_table + k * fsets_table_pitch);
 
 		for (j = threadIdx.x; j < fsets_total_len; j += blockDim.x) {
-			if (curand_uniform(state) < pm) fsets[j].s_mu = check_bound((int)((curand_normal(state)+1.f) * 10), 0, 20, 10);
-			if (curand_uniform(state) < pm) fsets[j].s_sigma = check_bound((int)((curand_normal(state)+1.f) * 10), 0, 20, 10);
+			float x = check_bound((int)((curand_normal(state)+1.f) * 10), 0, 20, 10);
+			float y = check_bound((int)((curand_normal(state)+1.f) * 10), 0, 20, 10);
+			if (curand_uniform(state) < pm) fsets[j].s_mu = x;
+			if (curand_uniform(state) < pm) fsets[j].s_sigma = y;
 		}
 	}
 }
@@ -584,11 +580,13 @@ __global__ void perform_rules_mutation_kernel(curandStateMtgp32 *states, unsigne
 
 		for (j = threadIdx.x; j < rules_len; j += blockDim.x) {
 			for (i = 0; i < n; ++i) {
+				int x = curand(state);
 				if (curand_uniform(state) < pm)
-					rules[j * (n+1) + i] = curand(state) % (fset_lens[i] + 1);
+					rules[j * (n+1) + i] = x % (fset_lens[i] + 1);
 			}
+			int y = curand(state);
 			if (curand_uniform(state) < pm)
-				rules[j * (n+1) + n] = curand(state) % fset_lens[n] + 1;
+				rules[j * (n+1) + n] = y % fset_lens[n] + 1;
 		}
 	}
 }
@@ -608,6 +606,7 @@ static __forceinline void perform_mutation(curandStateMtgp32 *states_d, unsigned
 																											 pm_fsets);
 		CUDA_CALL(cudaPeekAtLastError());
 	}
+
 	{
 		unsigned blocks = MIN(population_power, 200);
 		unsigned threads = MIN(rules_len, 256);
@@ -648,7 +647,7 @@ __global__ void find_best_chromosome_kernel(float *scores, unsigned *indices, un
 		best_chromosome_loc->index = indices[0];
 	}
 }
-	
+
 
 static __forceinline void dump_best_chromosome(float *scores_d, unsigned *indices_d, unsigned population_power,
 																							 const GaussEvoParams *fsets_table_d, size_t fsets_table_pitch, unsigned fsets_total_len,
@@ -657,10 +656,10 @@ static __forceinline void dump_best_chromosome(float *scores_d, unsigned *indice
 																							 GaussEvoParams *res_fsets_d, signed char *res_rules_d)
 {
 	BestValueLoc best_chromosome_loc;
-	
+
 	find_best_chromosome_kernel<<<(population_power + 255) / 256, 256>>>(scores_d, indices_d, population_power, best_chromosome_loc_d);
 	CUDA_CALL(cudaMemcpy(&best_chromosome_loc, best_chromosome_loc_d, sizeof(BestValueLoc), cudaMemcpyDeviceToHost));
-	
+
 	if (best_chromosome_loc.value > *last_best_score_ptr) {
 		// printf(">Found best chromosome with score = %f\n", best_chromosome_loc.value);
 		CUDA_CALL(cudaMemcpy(res_fsets_d, (const GaussEvoParams*)((const char*)fsets_table_d + best_chromosome_loc.index * fsets_table_pitch),
@@ -677,9 +676,9 @@ static void convert_to_gauss_params(unsigned fsets_total_len, const unsigned *fs
 {
 	unsigned i, j;
 	GaussEvoParams gauss_evo_params[fsets_total_len];
-	
+
 	CUDA_CALL(cudaMemcpy(gauss_evo_params, gauss_evo_params_d, sizeof(GaussEvoParams[fsets_total_len]), cudaMemcpyDeviceToHost));
-	
+
 	for (i = 0; i < n+1; ++i) {
 		for (j = 0; j < fset_lens[i]; ++j) {
 			gauss_params[fset_offsets[i] + j] = make_gauss_params(gauss_evo_params[fset_offsets[i] + j], j, fset_lens[i]);
@@ -706,9 +705,9 @@ void tune_lfs_gpu_impl(
 	}
 
 	/* Device memory map:
-	 *	 
+	 *
 	 * +----------------------------------
-   * | 
+   * |
 	 * +----------------------------------
 	 */
 
@@ -825,7 +824,7 @@ void tune_lfs_gpu_impl(
 												 fsets_table_d, new_fsets_table_d, fsets_table_pitch, fsets_total_len,
 												 rules_table_d, new_rules_table_d, rules_table_pitch, rules_len,
 												 n, pc);
-		
+
 		perform_mutation(states_d, population_power, fset_lens_d, n,
 										 new_fsets_table_d, fsets_table_pitch, fsets_total_len,
 										 new_rules_table_d, rules_table_pitch, rules_len, pm_fsets, pm_rules);
@@ -833,7 +832,7 @@ void tune_lfs_gpu_impl(
 		SWAP(fsets_table_d, new_fsets_table_d);
 		SWAP(rules_table_d, new_rules_table_d);
 	}
-	
+
 	convert_to_gauss_params(fsets_total_len, fset_lens, fset_offsets, n, res_fsets_d, fsets);
 	CUDA_CALL(cudaMemcpy(rules, res_rules_d, sizeof(signed char[rules_len][n+1]), cudaMemcpyDeviceToHost));
 
